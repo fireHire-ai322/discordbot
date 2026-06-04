@@ -194,7 +194,146 @@ async def auto_attendance_scheduler():
             await channel.send(embed=create_attendance_embed(), view=AttendanceView())
             await asyncio.sleep(60)
 
-    # 2. الساعة 4:30 مساءً - تذكير المتأخرين + تقرير
+    # 2. الساعة 4:40 مساءً - التارجت اليومي لكل موظف
+    if now.weekday() in [0, 1, 2, 3, 4] and now.hour == 16 and now.minute == 40:
+        channel = bot.get_channel(CHANNEL_ID)
+        log_channel = bot.get_channel(LOG_CHANNEL_ID)
+
+        if channel and log_channel:
+            guild = channel.guild
+            role = guild.get_role(STAFF_ROLE_ID)
+
+            if role:
+                sent_to = []
+                failed = []
+                for member in role.members:
+                    if member.bot:
+                        continue
+                    try:
+                        target_embed = discord.Embed(
+                            title="🎯 Your Daily Target",
+                            description=(
+                                f"Hey {member.name}! 💪 Here's your mission for today:\n\n"
+                                f"**📋 Target:** Get **4 people** to fill out the recruitment form today.\n\n"
+                                f"**📌 How to complete it:**\n"
+                                f"1️⃣ Reach out to candidates and share the form link.\n"
+                                f"2️⃣ Make sure they **fully complete** the form.\n"
+                                f"3️⃣ Take a **screenshot** of each submitted form as proof.\n"
+                                f"4️⃣ Send all screenshots to your supervisor's DM.\n\n"
+                                f"🔥 Let's crush it today! You got this!"
+                            ),
+                            color=discord.Color.orange()
+                        )
+                        target_embed.set_footer(text="FireHire Recruitment | Daily Target System")
+                        await member.send(embed=target_embed)
+                        sent_to.append(member.mention)
+                    except discord.Forbidden:
+                        failed.append(member.mention)
+
+                # تقرير في اللوج روم
+                report = discord.Embed(
+                    title="📊 Daily Target DM Report — 4:40 PM",
+                    color=discord.Color.orange()
+                )
+                if sent_to:
+                    report.add_field(name="✅ Target Sent To:", value=", ".join(sent_to), inline=False)
+                if failed:
+                    report.add_field(name="⚠️ Failed (DMs Closed):", value=", ".join(failed), inline=False)
+                await log_channel.send(embed=report)
+
+    # 3. الساعة 7:00 مساءً - تذكير متابعة الـ CRM
+    if now.weekday() in [0, 1, 2, 3, 4] and now.hour == 19 and now.minute == 0:
+        channel = bot.get_channel(CHANNEL_ID)
+        log_channel = bot.get_channel(LOG_CHANNEL_ID)
+
+        if channel and log_channel:
+            guild = channel.guild
+            role = guild.get_role(STAFF_ROLE_ID)
+
+            if role:
+                sent_to = []
+                failed = []
+                for member in role.members:
+                    if member.bot:
+                        continue
+                    try:
+                        crm_embed = discord.Embed(
+                            title="🔄 CRM Follow-Up Reminder",
+                            description=(
+                                f"Hey {member.name}! 👋 Time for your **CRM check-in**:\n\n"
+                                f"📂 **Go to your CRM now and check:**\n\n"
+                                f"✅ **Accepted** — Congratulate them and move to next steps.\n"
+                                f"❌ **Rejected** — Update their status and send a polite message.\n"
+                                f"⏳ **Still Processing** — Send a follow-up message to check their status.\n\n"
+                                f"⚠️ Don't leave anyone without an update!\n"
+                                f"🏆 Consistent follow-up = more placements!"
+                            ),
+                            color=discord.Color.blue()
+                        )
+                        crm_embed.set_footer(text="FireHire Recruitment | CRM Follow-Up System")
+                        await member.send(embed=crm_embed)
+                        sent_to.append(member.mention)
+                    except discord.Forbidden:
+                        failed.append(member.mention)
+
+                # تقرير في اللوج روم
+                report = discord.Embed(
+                    title="📊 CRM Reminder Report — 7:00 PM",
+                    color=discord.Color.blue()
+                )
+                if sent_to:
+                    report.add_field(name="✅ Reminder Sent To:", value=", ".join(sent_to), inline=False)
+                if failed:
+                    report.add_field(name="⚠️ Failed (DMs Closed):", value=", ".join(failed), inline=False)
+                await log_channel.send(embed=report)
+
+    # 4. الساعة 8:30 مساءً - تذكير نهاية اليوم + التارجت
+    if now.weekday() in [0, 1, 2, 3, 4] and now.hour == 20 and now.minute == 30:
+        channel = bot.get_channel(CHANNEL_ID)
+        log_channel = bot.get_channel(LOG_CHANNEL_ID)
+
+        if channel and log_channel:
+            guild = channel.guild
+            role = guild.get_role(STAFF_ROLE_ID)
+
+            if role:
+                sent_to = []
+                failed = []
+                for member in role.members:
+                    if member.bot:
+                        continue
+                    try:
+                        eod_embed = discord.Embed(
+                            title="🌙 End of Day Reminder",
+                            description=(
+                                f"Hey {member.name}! The shift is almost over 🕘\n\n"
+                                f"**Before you log out, make sure you've done:**\n\n"
+                                f"🎯 Hit your target of **4 form submissions** today?\n"
+                                f"📸 Sent all **screenshots** to your supervisor?\n"
+                                f"🔄 Updated everyone's status in your **CRM**?\n"
+                                f"📋 Followed up with all pending candidates?\n\n"
+                                f"✅ If yes — great job today! Log out and rest 💪\n"
+                                f"⚠️ If not — you still have time, go finish it!"
+                            ),
+                            color=discord.Color.purple()
+                        )
+                        eod_embed.set_footer(text="FireHire Recruitment | End of Day Checklist")
+                        await member.send(embed=eod_embed)
+                        sent_to.append(member.mention)
+                    except discord.Forbidden:
+                        failed.append(member.mention)
+
+                report = discord.Embed(
+                    title="📊 End of Day Reminder Report — 8:30 PM",
+                    color=discord.Color.purple()
+                )
+                if sent_to:
+                    report.add_field(name="✅ Sent To:", value=", ".join(sent_to), inline=False)
+                if failed:
+                    report.add_field(name="⚠️ Failed (DMs Closed):", value=", ".join(failed), inline=False)
+                await log_channel.send(embed=report)
+
+    # 5. الساعة 4:30 مساءً - تذكير المتأخرين + تقرير
     if now.weekday() in [0, 1, 2, 3, 4] and now.hour == 16 and now.minute == 30:
         channel = bot.get_channel(CHANNEL_ID)
         log_channel = bot.get_channel(LOG_CHANNEL_ID)
@@ -271,21 +410,45 @@ async def auto_attendance_scheduler():
                     )
                     await log_channel.send(embed=warn_report)
 
-    # 4. الساعة 9:30 بالليل - البوت يوقف نفسه + تقرير اليوم + ليدربورد الجمعة
+    # 4. الساعة 9:30 بالليل - Auto Logout + تقرير اليوم + ليدربورد الجمعة
     if now.weekday() in [0, 1, 2, 3, 4] and now.hour == 21 and now.minute == 30:
         log_channel = bot.get_channel(LOG_CHANNEL_ID)
 
         if log_channel:
+            # Auto Logout لكل اللي نسيوا يعملوا logout
+            auto_logouted = []
+            now_dt = datetime.now(CAIRO_TZ)
+            current_time = now_dt.strftime("%I:%M %p")
+
+            for mention in list(logged_in_users.keys()):
+                login_time = login_timestamps.get(mention)
+                duration_str = ""
+                if login_time:
+                    delta = now_dt - login_time
+                    hours, remainder = divmod(int(delta.total_seconds()), 3600)
+                    minutes = remainder // 60
+                    duration_str = f"{hours}h {minutes}m"
+                auto_logouted.append(f"• {mention} *(duration: {duration_str})*")
+                del logged_in_users[mention]
+                login_timestamps.pop(mention, None)
+
             # تقرير نهاية اليوم
             day_report = discord.Embed(
                 title="🌙 End of Shift Report",
                 color=discord.Color.blurple()
             )
-            if logged_in_users:
-                still_online = "\n".join([f"• {mention} *(since {time})*" for mention, time in logged_in_users.items()])
-                day_report.add_field(name="⚠️ Still Logged In (forgot to logout):", value=still_online, inline=False)
+            if auto_logouted:
+                day_report.add_field(
+                    name="🔴 Auto Logged Out (forgot to logout):",
+                    value="\n".join(auto_logouted),
+                    inline=False
+                )
             else:
-                day_report.add_field(name="✅ All Staff", value="Everyone logged out properly today.", inline=False)
+                day_report.add_field(
+                    name="✅ All Staff",
+                    value="Everyone logged out properly today.",
+                    inline=False
+                )
             await log_channel.send(embed=day_report)
 
             # ليدربورد الأسبوع - يتبعت يوم الجمعة بس
