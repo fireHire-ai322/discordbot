@@ -31,6 +31,7 @@ TEAM_MAP = {
     "J": {"tl_role": "TL-J", "rec_role": "Rec-J", "channel": "sayed-team-j"},
     "N": {"tl_role": "TL-N", "rec_role": "Rec-N", "channel": "aya-team-n"},
     "E": {"tl_role": "TL-E", "rec_role": "Rec-E", "channel": "merna-team-e"},
+    "G": {"tl_role": "TL-G", "rec_role": "Rec-G", "channel": "dalia-team-g"},
 }
 
 intents = discord.Intents.default()
