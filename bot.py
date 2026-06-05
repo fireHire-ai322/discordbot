@@ -243,11 +243,6 @@ class RecruiterReportModal(discord.ui.Modal, title="📋 Daily Report"):
         else:
              await interaction.followup.send("✅ Report submitted, but I couldn't find your TL.", ephemeral=True)
 
-@bot.command()
-async def testreport(ctx):
-    # الأمر ده بيبعتلك رسالة جديدة فيها زرار التقرير عشان تجرب عليه
-    view = ReportView() # بتستدعي كلاس الزرار بتاعك
-    await ctx.send("رسالة اختبار جديدة. دوس على الزرار وجرب:", view=view)
 
 # ============================================================
 # الأزرار
