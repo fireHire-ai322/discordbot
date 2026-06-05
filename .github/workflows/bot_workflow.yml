@@ -3,7 +3,7 @@ name: Discord Attendance Bot
 on:
   schedule:
     # الساعة 3:00 مساءً بتوقيت القاهرة (UTC+3) = الساعة 12:00 UTC
-    - cron: '0 12 * * 1-5'
+    - cron: '30 11 * * 1-5'
   workflow_dispatch:
 
 jobs:
