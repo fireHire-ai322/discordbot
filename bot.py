@@ -179,15 +179,30 @@ class RecruiterReportModal(discord.ui.Modal, title="📋 Daily Report"):
     )
 
     async def on_submit(self, interaction: discord.Interaction):
-        user = interaction.user
-        guild = interaction.guild
-        letter = get_team_letter_for_member(user)
-        tl = get_tl_for_team(guild, letter) if letter else None
+        # 1. إحباط أي تأخير في الاستجابة
+        await interaction.response.defer(ephemeral=True)
 
-        # إشعار الريكروتر
-        await interaction.response.send_message(
-            "✅ Report submitted successfully! Your TL has been notified.", ephemeral=True
-        )
+        user = interaction.user
+        
+        # 2. تحديد السيرفر الأساسي بتاعك (لو الـ Modal اتفتح في DM، الـ guild هيكون None)
+        # احنا هنستدعيه برقم الـ ID بتاع السيرفر اللي أنت حاطط قنواته فوق عشان نضمنه
+        # لو معندكش GUILD_ID فوق، ممكن نجيبه من الـ channel_id
+        main_channel = bot.get_channel(CHANNEL_ID)
+        if not main_channel:
+            await interaction.followup.send("❌ حدث خطأ: لا يمكن العثور على السيرفر.", ephemeral=True)
+            return
+            
+        guild = main_channel.guild
+
+        # 3. سحب بيانات العضو (Member) من السيرفر باستخدام الـ ID بتاع الـ User
+        member = guild.get_member(user.id)
+        if not member:
+            await interaction.followup.send("❌ حدث خطأ: لا يمكن العثور على رتبك في السيرفر.", ephemeral=True)
+            return
+
+        # 4. دلوقتي نمرر الـ member (اللي جواه الرتب) للدالة واحنا مطمنين
+        letter = get_team_letter_for_member(member)
+        tl = get_tl_for_team(guild, letter) if letter else None
 
         daily_reports_sent.add(str(user.id))
 
@@ -198,7 +213,7 @@ class RecruiterReportModal(discord.ui.Modal, title="📋 Daily Report"):
                 title="📊 Recruiter Daily Report",
                 color=discord.Color.green()
             )
-            report_embed.add_field(name="👔 Recruiter", value=user.mention, inline=True)
+            report_embed.add_field(name="👔 Recruiter", value=member.mention, inline=True)
             report_embed.add_field(name="🕐 Submitted At", value=now, inline=True)
             report_embed.add_field(name="\u200B", value="\u200B", inline=False)
             report_embed.add_field(
@@ -222,9 +237,11 @@ class RecruiterReportModal(discord.ui.Modal, title="📋 Daily Report"):
 
             try:
                 await tl.send(embed=report_embed)
+                await interaction.followup.send("✅ Report submitted successfully! Your TL has been notified.", ephemeral=True)
             except discord.Forbidden:
-                pass
-
+                await interaction.followup.send("✅ Report submitted, but I couldn't DM your TL (their DMs are closed).", ephemeral=True)
+        else:
+             await interaction.followup.send("✅ Report submitted, but I couldn't find your TL.", ephemeral=True)
 
 # ============================================================
 # الأزرار
