@@ -2,18 +2,13 @@ name: Discord Attendance Bot
 
 on:
   schedule:
-    # الساعة 3:30 مساءً بتوقيت القاهرة (UTC+3) = الساعة 12:30 UTC
-    # من الإثنين للجمعة بس (1-5)
-    - cron: '30 12 * * 1-5'
-
-  # تشغيل يدوي من GitHub لو احتجت تشغله في أي وقت
+    # الساعة 3:00 مساءً بتوقيت القاهرة (UTC+3) = الساعة 12:00 UTC
+    - cron: '0 12 * * 1-5'
   workflow_dispatch:
 
 jobs:
   run-bot:
     runs-on: ubuntu-latest
-
-    # 6 ساعات و 15 دقيقة (من 3:30 لـ 9:30 + شوية إضافية للأمان)
     timeout-minutes: 375
 
     steps:
@@ -26,9 +21,10 @@ jobs:
           python-version: '3.11'
 
       - name: Install dependencies
-  run: pip install discord.py pytz aiohttp
+        run: pip install discord.py pytz aiohttp
 
       - name: Run Discord Bot
         env:
           DISCORD_TOKEN: ${{ secrets.DISCORD_TOKEN }}
+          GAS_URL: ${{ secrets.GAS_URL }}
         run: python bot.py
