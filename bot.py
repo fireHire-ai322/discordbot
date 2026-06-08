@@ -341,7 +341,7 @@ async def scheduler_loop():
             # تحقق الوقت — ±29 ثانية tolerance
             task_time = now.replace(hour=task_h, minute=task_m, second=0, microsecond=0)
             diff_secs = abs((now - task_time).total_seconds())
-            if diff_secs > 29:
+            if diff_secs > 300:
                 continue
 
             # تحقق إنها مش اتعملت النهارده
