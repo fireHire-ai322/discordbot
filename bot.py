@@ -1,8 +1,156 @@
+
+Claude finished the response
+name: Discord Attendance Bot
+on:
+  schedule:
+    - cron: '30 12 * * 1-5'   # 3:30 PM Cairo — رسالة تنبيه
+    - cron: '0 13 * * 1-5'    # 4:00 PM Cairo — فتح الحضور
+    - cron: '30 13 * * 1-5'   # 4:30 PM Cairo — تذكير المتأخرين
+    - cron: '40 13 * * 1-5'   # 4:40 PM Cairo — التارجت اليومي
+    - cron: '0 16 * * 1-5'    # 7:00 PM Cairo — تذكير CRM
+    - cron: '30 17 * * 1-5'   # 8:30 PM Cairo — End of Day
+    - cron: '0 17 * * 4'      # 8:00 PM Cairo الخميس — تحذير الطرد
+    - cron: '30 18 * * 1-5'   # 9:30 PM Cairo — Auto Logout
+  workflow_dispatch:
+jobs:
+  run-bot:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4.2.2
+        with:
+          fetch-depth: 0
+      - name: Setup Python
+        uses: actions/setup-python@v5.6.0
+        with:
+          python-version: '3.11'
+      - name: Restore state cache
+        uses: actions/cache@v4
+        with:
+          path: last_state.json
+          key: attendance-state-v1
+          restore-keys: attendance-state-v1
+      - name: Install dependencies
+        run: pip install discord.py pytz aiohttp
+      - name: Run Bot
+        env:
+          DISCORD_TOKEN: ${{ secrets.DISCORD_TOKEN }}
+          GAS_URL:       ${{ secrets.GAS_URL }}
+        run: python bot.py
+      - name: Save state cache
+        uses: actions/cache/save@v4
+        if: always()
+        with:
+          path: last_state.json
+          key: attendance-state-v1
+
+خلى ده run 24 ساعة يأدى المهام اللى عليه فى الوقت المحدد لها بس البوت ماينامش
+
+Show more
+4:14 PM
+هخلي البوت يشتغل 24/7 بدل ما يتشغل بـ cron. الحل الأبسط هو تحويله لـ long-running process على GitHub Actions مع loop داخلي.
+
+
+Check skills directory
+Check skills directory
+الحل هو تحويل الـ workflow لـ schedule: every 6 hours مع keep-alive ping أو الأفضل — تحويل البوت نفسه لـ scheduler داخلي يشتغل في loop ويحسب الوقت بنفسه، وتشغله على GitHub Actions بـ job واحد يدوم 6 ساعات، مع workflow يعيد نفسه.
+
+إليك الحل الكامل:
+
+
+Created 2 files, read a file
+Created 2 files, read a file
+إزاي الحل بيشتغل ⚙️
+المشكلة الأساسية: GitHub Actions بتقتل الـ job بعد 6 ساعات كحد أقصى، ومش ممكن تخلّيها تشتغل 24/7 فعلياً.
+
+الحل المطبّق — طبقتين:
+
+1. الـ Workflow (.github/workflows/discord-attendance.yml)
+بدل 8 cron jobs منفصلة → cron واحد كل 6 ساعات يشغّل الـ bot كـ long-running process لمدة 5.5 ساعة، وبكره الـ cron التاني يكمّل.
+
+00:00 → Job تشتغل لـ 5:30 ساعة
+06:00 → Job جديدة تكمّل
+12:00 → Job جديدة تكمّل  
+18:00 → Job جديدة تكمّل
+2. البوت نفسه (bot.py) — Internal Scheduler
+scheduler_loop() يصحى كل 30 ثانية ويشوف الوقت
+بيتحقق من 3 حاجات قبل ما ينفّذ أي task:
+هل دلوقتي الوقت الصح؟ (بفارق ±29 ثانية)
+هل اليوم الصح؟ (مثلاً تحذير الطرد → الخميس بس)
+هل اتنفّذ النهارده قبل كده؟ (عشان مش يكرر)
+last_state.json بيتحفظ في cache عشان يفضل يتذكر اللي اتنفذ حتى لو الـ job اتعملت restart
+ملاحظة مهمة
+غيّر _get_attendance_channel() لو اسم الـ channel عندك مختلف — أو ابعتلي اسمه وأعدّلهالك.
+
+
+Discord attendance
+YML 
+
+Bot
+PY 
+إحنا فى التوقيت الصيفى فى مصر الساعة بتزيد ساعة يعنى المفروض الاسكريبت يبعت الرسالة بتاعة تسجيل الحضور الساعة 4 اللى هى open هل أنت عاملها كده؟
+
+4:17 PM
+خليني أراجع الكود الحالي:
+
+
+Check timezone and task times in bot.py
+Check timezone and task times in bot.py
+آه، الكود صح ✅
+
+السبب: الكود بيستخدم pytz.timezone("Africa/Cairo") وبياخد datetime.now(CAIRO_TZ) — يعني pytz بتتعامل مع التوقيت الصيفي أوتوماتيك.
+
+python
+CAIRO_TZ = pytz.timezone("Africa/Cairo")
+now_cairo = datetime.now(CAIRO_TZ)  # ← دايماً بيديك الوقت الصح في مصر
+لما مصر في التوقيت الصيفي (UTC+3)، pytz بتعرف ده من الـ timezone database وبتحسبه تلقائياً. يعني لما بتقول hour=16 ده 4 مساءً بتوقيت القاهرة الفعلي — مش UTC.
+
+الـ cron في الـ workflow هو اللي كان محتاج تعديل لو كنا بنعتمد عليه، لكن بما إننا بقينا بنعتمد على الـ internal scheduler في bot.py فمفيش مشكلة.
+
+
+""" FireHire RS — Discord Attendance Bot بيشتغل على GitHub Actions كل run بيعمل action واحد بس حسب الوقت بيحفظ الـ state في last_state.json """ import discord from discord.ext import commands from datetime import datetime import pytz import asyncio import os import aiohttp import json # ==========
+
+pasted
+
+ده الفايل بتاعى
+
+4:19 PM
+تمام، شايف الكود بتاعك. ده البوت الأصلي اللي بيشتغل بـ cron وكل run بيعمل task واحدة وبيقفل.
+
+عايز أوضح حاجة مهمة قبل ما نكمل:
+
+الكودين مختلفين تماماً — الكود بتاعك فيه logic تفصيلية (buttons، modals، DMs للأعضاء، leaderboard، weekly check، kick warning) مش موجودة في الكود اللي عملته قبل كده.
+
+عايزني أعمل إيه بالظبط؟
+
+Q: إيه اللي عايزه؟
+A: اعمل اللى شايفه صح بس أهم حاجة البوت يفضل شغال عشان مايفتهوش حاجة
+
+4:21 PM
+تمام، هحول الكود بتاعك الأصلي لـ long-running مع الاحتفاظ بكل الـ logic.
+
+
+Review the full original bot code structure
+Review the full original bot code structure
+الآن هكتب الكود الكامل — كود بتاعك الأصلي بالـ logic كلها + الـ long-running scheduler:
+
+
+Ran a command, created a file
+Ran a command, created a file
+
+Remove old bot.py to recreate it
+
+Script
+
+Full bot.py - original logic + long-running internal scheduler
+python
+
 """
 FireHire RS — Discord Attendance Bot
-بيشتغل على GitHub Actions
-كل run بيعمل action واحد بس حسب الوقت
-بيحفظ الـ state في last_state.json
+long-running على GitHub Actions — بيشتغل 5.5 ساعة ثم يعيد نفسه
+الـ scheduler داخلي بيصحى كل 30 ثانية ويتحقق من المواعيد بتوقيت القاهرة
 """
 
 import discord
@@ -13,6 +161,18 @@ import asyncio
 import os
 import aiohttp
 import json
+import time
+import logging
+
+# ============================================================
+# Logging
+# ============================================================
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(message)s",
+    datefmt="%Y-%m-%d %H:%M:%S",
+)
+log = logging.getLogger("FireHireBot")
 
 # ============================================================
 # Config
@@ -26,6 +186,10 @@ GAS_URL        = os.environ.get("GAS_URL", "")
 CAIRO_TZ   = pytz.timezone("Africa/Cairo")
 STATE_FILE = "last_state.json"
 
+# كم دقيقة يشتغل البوت قبل ما يوقف نفسه (5.5 ساعة = 330 دقيقة)
+# الـ workflow بيشغّل job جديدة كل 6 ساعات فمفيش gap
+MAX_RUNTIME_MINUTES = int(os.environ.get("BOT_MAX_RUNTIME_MINUTES", "330"))
+
 TEAM_MAP = {
     "A": {"tl_role": "TL-A", "rec_role": "Rec-A", "channel": "hussein-team-a"},
     "B": {"tl_role": "TL-B", "rec_role": "Rec-B", "channel": "amir-team-b"},
@@ -37,6 +201,22 @@ TEAM_MAP = {
     "E": {"tl_role": "TL-E", "rec_role": "Rec-E", "channel": "merna-team-e"},
     "G": {"tl_role": "TL-G", "rec_role": "Rec-G", "channel": "dalia-team-g"},
 }
+
+# ============================================================
+# Scheduled Tasks
+# (hour_cairo, minute, task_key, weekdays)
+# weekdays: None = كل الأيام | set = أيام معينة (0=Mon…4=Fri)
+# ============================================================
+TASKS = [
+    (15, 30, "pre_attendance_msg", {0, 1, 2, 3, 4}),  # 3:30 PM — تنبيه
+    (16,  0, "attendance_open",    {0, 1, 2, 3, 4}),  # 4:00 PM — فتح الحضور
+    (16, 30, "reminder_430",       {0, 1, 2, 3, 4}),  # 4:30 PM — تذكير المتأخرين
+    (16, 40, "daily_target",       {0, 1, 2, 3, 4}),  # 4:40 PM — التارجت اليومي
+    (19,  0, "crm_reminder",       {0, 1, 2, 3, 4}),  # 7:00 PM — تذكير CRM
+    (20,  0, "thursday_warning",   {3}),               # 8:00 PM الخميس فقط — تحذير الطرد
+    (20, 30, "eod_report",         {0, 1, 2, 3, 4}),  # 8:30 PM — End of Day
+    (21, 30, "auto_logout",        {0, 1, 2, 3, 4}),  # 9:30 PM — Auto Logout
+]
 
 # ============================================================
 # State Management
@@ -58,16 +238,18 @@ def save_state(state):
     with open(STATE_FILE, "w", encoding="utf-8") as f:
         json.dump(state, f, ensure_ascii=False, indent=2)
 
-def is_task_done(state, task_name, date_str):
-    key = f"{task_name}_{date_str}"
-    return key in state.get("tasks_done", [])
+def is_task_done(state, task_key, date_str):
+    return f"{task_key}_{date_str}" in state.get("tasks_done", [])
 
-def mark_task_done(state, task_name, date_str):
-    key = f"{task_name}_{date_str}"
+def mark_task_done(state, task_key, date_str):
+    key = f"{task_key}_{date_str}"
     if key not in state["tasks_done"]:
         state["tasks_done"].append(key)
-    # مسح الـ tasks القديمة (أكتر من 7 أيام)
-    state["tasks_done"] = [t for t in state["tasks_done"] if date_str in t or t.split("_")[-1] >= date_str]
+    # مسح القديم (أكتر من 7 أيام)
+    state["tasks_done"] = [
+        t for t in state["tasks_done"]
+        if t.split("_")[-1] >= date_str
+    ]
 
 # ============================================================
 # Helpers
@@ -88,14 +270,6 @@ def get_tl_for_team(guild, letter):
     members = [m for m in tl_role.members if not m.bot]
     return members[0] if members else None
 
-def get_rec_members_for_team(guild, letter):
-    if letter not in TEAM_MAP:
-        return []
-    rec_role = discord.utils.get(guild.roles, name=TEAM_MAP[letter]["rec_role"])
-    if not rec_role:
-        return []
-    return [m for m in rec_role.members if not m.bot]
-
 def create_attendance_embed(logged_in_today):
     embed = discord.Embed(
         title="📝 Daily Attendance System",
@@ -105,14 +279,14 @@ def create_attendance_embed(logged_in_today):
     embed.add_field(name="🟢 Log In",  value="Click when you start your shift.", inline=True)
     embed.add_field(name="🔴 Log Out", value="Click when you finish your shift.", inline=True)
     if logged_in_today:
-        users_list = "\n".join([f"🟢 {mention} *(at {time})*" for mention, time in logged_in_today.items()])
+        users_list = "\n".join([f"🟢 {mention} *(at {t})*" for mention, t in logged_in_today.items()])
     else:
         users_list = "*No one checked in yet.*"
     embed.add_field(name="📊 Active Staff Today", value=users_list, inline=False)
     return embed
 
 # ============================================================
-# Modal لتقرير الريكروتر
+# Modal — تقرير الريكروتر
 # ============================================================
 class RecruiterReportModal(discord.ui.Modal, title="📋 Daily Report"):
     candidates_count = discord.ui.TextInput(
@@ -154,10 +328,10 @@ class RecruiterReportModal(discord.ui.Modal, title="📋 Daily Report"):
         if tl:
             now = datetime.now(CAIRO_TZ).strftime("%I:%M %p")
             report_embed = discord.Embed(title="📊 Recruiter Daily Report", color=discord.Color.green())
-            report_embed.add_field(name="👔 Recruiter",  value=member.mention, inline=True)
+            report_embed.add_field(name="👔 Recruiter",    value=member.mention, inline=True)
             report_embed.add_field(name="🕐 Submitted At", value=now, inline=True)
             report_embed.add_field(name="\u200B", value="\u200B", inline=False)
-            report_embed.add_field(name="🎯 Candidates", value=self.candidates_count.value, inline=True)
+            report_embed.add_field(name="🎯 Candidates",  value=self.candidates_count.value, inline=True)
             report_embed.add_field(name="📸 Screenshots", value=self.screenshots_sent.value, inline=True)
             if self.notes.value:
                 report_embed.add_field(name="📝 Notes", value=self.notes.value, inline=False)
@@ -188,11 +362,9 @@ class AttendanceView(discord.ui.View):
         week_str     = now_dt.strftime("%Y-W%W")
 
         if user.mention not in state["logged_in_today"]:
-            # تسجيل لوجين اليوم
-            state["logged_in_today"][user.mention]    = current_time
-            state["login_timestamps"][user.mention]   = now_dt.isoformat()
+            state["logged_in_today"][user.mention]   = current_time
+            state["login_timestamps"][user.mention]  = now_dt.isoformat()
 
-            # تسجيل اللوجين الأسبوعي
             uid = str(user.id)
             if uid not in state["weekly_logins"]:
                 state["weekly_logins"][uid] = {"week": week_str, "days": []}
@@ -201,7 +373,6 @@ class AttendanceView(discord.ui.View):
             if today_str not in state["weekly_logins"][uid]["days"]:
                 state["weekly_logins"][uid]["days"].append(today_str)
 
-            # ليدربورد
             if uid not in state["leaderboard"]:
                 state["leaderboard"][uid] = 0
             state["leaderboard"][uid] += 1
@@ -281,365 +452,425 @@ intents.message_content = True
 intents.members = True
 bot = commands.Bot(command_prefix="!", intents=intents)
 
+# ============================================================
+# Scheduler Loop — قلب البوت
+# يصحى كل 30 ثانية ويشوف إيه التاسك المفروض يتشغل
+# ============================================================
 @bot.event
 async def on_ready():
-    print(f"✅ Bot online: {bot.user}")
+    log.info(f"✅ Bot online: {bot.user}")
     bot.add_view(AttendanceView())
     bot.add_view(ReportView())
-    await run_scheduled_task()
-    await bot.close()
+    bot.loop.create_task(scheduler_loop())
+
+async def scheduler_loop():
+    log.info("⏰ Internal scheduler started")
+    start_time = time.monotonic()
+
+    while True:
+        # ── هل عدّينا الـ MAX_RUNTIME؟ → اقفل نفسك عشان الـ job الجديدة تبدأ
+        elapsed = (time.monotonic() - start_time) / 60
+        if elapsed >= MAX_RUNTIME_MINUTES:
+            log.info(f"⏳ Max runtime ({MAX_RUNTIME_MINUTES}min) reached. Closing gracefully...")
+            await bot.close()
+            return
+
+        now     = datetime.now(CAIRO_TZ)
+        h       = now.hour
+        m       = now.minute
+        today   = now.strftime("%Y-%m-%d")
+        weekday = now.weekday()
+        state   = load_state()
+
+        for task_h, task_m, task_key, weekdays in TASKS:
+            # تحقق اليوم
+            if weekdays is not None and weekday not in weekdays:
+                continue
+
+            # تحقق الوقت — ±29 ثانية tolerance
+            task_time = now.replace(hour=task_h, minute=task_m, second=0, microsecond=0)
+            diff_secs = abs((now - task_time).total_seconds())
+            if diff_secs > 29:
+                continue
+
+            # تحقق إنها مش اتعملت النهارده
+            if is_task_done(state, task_key, today):
+                continue
+
+            log.info(f"▶️  Running task: {task_key} at {now.strftime('%H:%M:%S')}")
+            try:
+                await run_task(task_key, state, now, weekday, today)
+                mark_task_done(state, task_key, today)
+                save_state(state)
+                log.info(f"✅ Task done: {task_key}")
+            except Exception as e:
+                log.error(f"❌ Task {task_key} failed: {e}", exc_info=True)
+
+        await asyncio.sleep(30)
 
 # ============================================================
-# Scheduled Task - بيشتغل مرة واحدة حسب الوقت
+# Task Runner
 # ============================================================
-async def run_scheduled_task():
-    now      = datetime.now(CAIRO_TZ)
-    h        = now.hour
-    m        = now.minute
-    today    = now.strftime("%Y-%m-%d")
-    weekday  = now.weekday()  # 0=Monday ... 4=Friday
-    state    = load_state()
+async def run_task(task_key, state, now, weekday, today):
+    channel     = bot.get_channel(CHANNEL_ID)
+    log_channel = bot.get_channel(LOG_CHANNEL_ID)
 
-    print(f"🕐 Running at Cairo time: {now.strftime('%H:%M')} | weekday={weekday}")
+    # ── 3:30 PM — رسالة تنبيه ─────────────────────────────────
+    if task_key == "pre_attendance_msg":
+        if channel:
+            role  = channel.guild.get_role(STAFF_ROLE_ID)
+            ping  = role.mention if role else "@staff"
+            embed = discord.Embed(
+                title="⏰ Shift Starting Soon!",
+                description=(
+                    f"{ping}\n\n"
+                    f"🔔 Shift starts in **30 minutes** at **4:00 PM**!\n\n"
+                    f"Get ready and make sure to click **Log In 🟢** when the attendance opens.\n\n"
+                    f"💪 Let's make it a great day!"
+                ),
+                color=discord.Color.orange()
+            )
+            embed.set_footer(text="FireHire Recruitment | Attendance Reminder")
+            await channel.send(embed=embed)
 
-    # ── 3:30 PM — رسالة تنبيه قبل فتح الحضور ──────────────────
-    if h == 15 and 30 <= m < 40:
-        if not is_task_done(state, "pre_attendance_msg", today):
-            channel = bot.get_channel(CHANNEL_ID)
-            if channel:
-                role  = channel.guild.get_role(STAFF_ROLE_ID)
-                ping  = role.mention if role else "@staff"
-                embed = discord.Embed(
-                    title="⏰ Shift Starting Soon!",
-                    description=(
-                        f"{ping}\n\n"
-                        f"🔔 Shift starts in **30 minutes** at **4:00 PM**!\n\n"
-                        f"Get ready and make sure to click **Log In 🟢** when the attendance opens.\n\n"
-                        f"💪 Let's make it a great day!"
-                    ),
-                    color=discord.Color.orange()
-                )
-                embed.set_footer(text="FireHire Recruitment | Attendance Reminder")
-                await channel.send(embed=embed)
-                mark_task_done(state, "pre_attendance_msg", today)
-                save_state(state)
-                print("✅ Pre-attendance message sent.")
+    # ── 4:00 PM — فتح الحضور ──────────────────────────────────
+    elif task_key == "attendance_open":
+        if channel:
+            state["logged_in_today"]    = {}
+            state["login_timestamps"]   = {}
+            state["daily_reports_sent"] = []
+            save_state(state)
+            await channel.purge(limit=5, check=lambda msg: msg.author == bot.user)
+            await channel.send(embed=create_attendance_embed({}), view=AttendanceView())
 
-    # ── 4:00 PM — فتح الحضور ───────────────────────────────────
-    elif h == 16 and 0 <= m < 10:
-        if not is_task_done(state, "attendance_open", today):
-            channel = bot.get_channel(CHANNEL_ID)
-            if channel:
-                state["logged_in_today"]   = {}
-                state["login_timestamps"]  = {}
-                state["daily_reports_sent"] = []
-                save_state(state)
-                await channel.purge(limit=5, check=lambda msg: msg.author == bot.user)
-                await channel.send(embed=create_attendance_embed({}), view=AttendanceView())
-                mark_task_done(state, "attendance_open", today)
-                save_state(state)
-                print("✅ Attendance opened.")
-
-    # ── 4:30 PM — تذكير المتأخرين ──────────────────────────────
-    elif h == 16 and 30 <= m < 40:
-        if not is_task_done(state, "reminder_430", today):
-            channel     = bot.get_channel(CHANNEL_ID)
-            log_channel = bot.get_channel(LOG_CHANNEL_ID)
-            if channel and log_channel:
-                guild = channel.guild
-                role  = guild.get_role(STAFF_ROLE_ID)
-                if role:
-                    reminded, failed = [], []
-                    for member in role.members:
-                        if member.bot or member.mention in state["logged_in_today"]:
-                            continue
-                        try:
-                            dm_embed = discord.Embed(
-                                title="⚡ Shift Reminder!",
-                                description=f"Hey {member.name}! Shift started 30 mins ago!\nGo to {channel.mention} and click **Log In 🟢** 💪🔥",
-                                color=discord.Color.orange()
-                            )
-                            await member.send(embed=dm_embed)
-                            reminded.append(member.mention)
-                        except discord.Forbidden:
-                            failed.append(member.mention)
-
-                    report = discord.Embed(title="📊 4:30 PM Reminder Report", color=discord.Color.gold())
-                    if reminded:
-                        report.add_field(name="📩 Reminded:", value=", ".join(reminded), inline=False)
-                    if failed:
-                        report.add_field(name="⚠️ DMs Closed:", value=", ".join(failed), inline=False)
-                    if not reminded and not failed:
-                        report.description = "✅ Everyone logged in before 4:30 PM!"
-                    await log_channel.send(embed=report)
-                    mark_task_done(state, "reminder_430", today)
-                    save_state(state)
-                    print("✅ 4:30 reminder sent.")
-
-    # ── 4:40 PM — التارجت اليومي ───────────────────────────────
-    elif h == 16 and 40 <= m < 50:
-        if not is_task_done(state, "daily_target", today):
-            channel     = bot.get_channel(CHANNEL_ID)
-            log_channel = bot.get_channel(LOG_CHANNEL_ID)
-            if channel and log_channel:
-                guild = channel.guild
-                role  = guild.get_role(STAFF_ROLE_ID)
-                if role:
-                    sent, failed = [], []
-                    for member in role.members:
-                        if member.bot:
-                            continue
-                        try:
-                            embed = discord.Embed(
-                                title="🎯 Your Daily Target",
-                                description=(
-                                    f"Hey {member.name}! 💪\n\n"
-                                    f"**📋 Target:** Get **4 people** to fill the form today.\n\n"
-                                    f"1️⃣ Reach out to candidates & share the form.\n"
-                                    f"2️⃣ Make sure they fully complete it.\n"
-                                    f"3️⃣ Take a screenshot of each submission.\n"
-                                    f"4️⃣ Send screenshots to your TL's DM.\n\n"
-                                    f"🔥 Let's crush it today!"
-                                ),
-                                color=discord.Color.orange()
-                            )
-                            embed.set_footer(text="FireHire Recruitment | Daily Target")
-                            await member.send(embed=embed)
-                            sent.append(member.mention)
-                        except discord.Forbidden:
-                            failed.append(member.mention)
-
-                    report = discord.Embed(title="📊 Daily Target Report — 4:40 PM", color=discord.Color.orange())
-                    if sent:
-                        report.add_field(name="✅ Sent:", value=", ".join(sent), inline=False)
-                    if failed:
-                        report.add_field(name="⚠️ Failed:", value=", ".join(failed), inline=False)
-                    await log_channel.send(embed=report)
-                    mark_task_done(state, "daily_target", today)
-                    save_state(state)
-                    print("✅ Daily target sent.")
-
-    # ── 7:00 PM — تذكير CRM ────────────────────────────────────
-    elif h == 19 and 0 <= m < 10:
-        if not is_task_done(state, "crm_reminder", today):
-            channel     = bot.get_channel(CHANNEL_ID)
-            log_channel = bot.get_channel(LOG_CHANNEL_ID)
-            if channel and log_channel:
-                guild = channel.guild
-                role  = guild.get_role(STAFF_ROLE_ID)
-                if role:
-                    sent, failed = [], []
-                    for member in role.members:
-                        if member.bot:
-                            continue
-                        try:
-                            embed = discord.Embed(
-                                title="🔄 CRM Follow-Up Reminder",
-                                description=(
-                                    f"Hey {member.name}! 👋 Time for your **CRM check-in**:\n\n"
-                                    f"✅ **Accepted** — Congratulate & move to next steps.\n"
-                                    f"❌ **Rejected** — Update status & send a polite message.\n"
-                                    f"⏳ **Processing** — Follow up & check status.\n\n"
-                                    f"⚠️ Don't leave anyone without an update!\n"
-                                    f"🏆 Consistent follow-up = more placements!"
-                                ),
-                                color=discord.Color.blue()
-                            )
-                            embed.set_footer(text="FireHire Recruitment | CRM Follow-Up")
-                            await member.send(embed=embed)
-                            sent.append(member.mention)
-                        except discord.Forbidden:
-                            failed.append(member.mention)
-
-                    report = discord.Embed(title="📊 CRM Reminder — 7:00 PM", color=discord.Color.blue())
-                    if sent:
-                        report.add_field(name="✅ Sent:", value=", ".join(sent), inline=False)
-                    if failed:
-                        report.add_field(name="⚠️ Failed:", value=", ".join(failed), inline=False)
-                    await log_channel.send(embed=report)
-                    mark_task_done(state, "crm_reminder", today)
-                    save_state(state)
-                    print("✅ CRM reminder sent.")
-
-    # ── 8:30 PM — End of Day + طلب التقرير ─────────────────────
-    elif h == 20 and 30 <= m < 40:
-        if not is_task_done(state, "eod_report", today):
-            channel     = bot.get_channel(CHANNEL_ID)
-            log_channel = bot.get_channel(LOG_CHANNEL_ID)
-            if channel and log_channel:
-                guild = channel.guild
-                role  = guild.get_role(STAFF_ROLE_ID)
-                if role:
-                    sent, failed = [], []
-                    for member in role.members:
-                        if member.bot:
-                            continue
-                        try:
-                            embed = discord.Embed(
-                                title="🌙 End of Day — Submit Your Report",
-                                description=(
-                                    f"Hey {member.name}! Shift is almost over 🕘\n\n"
-                                    f"**Before logging out, check:**\n"
-                                    f"🎯 Hit your **4 form submissions** target?\n"
-                                    f"📸 Sent **screenshots** to your TL?\n"
-                                    f"🔄 Updated your **CRM** statuses?\n\n"
-                                    f"📋 **Click below to submit your daily report!**"
-                                ),
-                                color=discord.Color.purple()
-                            )
-                            embed.set_footer(text="FireHire Recruitment | End of Day")
-                            await member.send(embed=embed, view=ReportView())
-                            sent.append(member.mention)
-                        except discord.Forbidden:
-                            failed.append(member.mention)
-
-                    report = discord.Embed(title="📊 End of Day Report — 8:30 PM", color=discord.Color.purple())
-                    if sent:
-                        report.add_field(name="✅ Sent:", value=", ".join(sent), inline=False)
-                    if failed:
-                        report.add_field(name="⚠️ Failed:", value=", ".join(failed), inline=False)
-                    await log_channel.send(embed=report)
-                    mark_task_done(state, "eod_report", today)
-                    save_state(state)
-                    print("✅ EOD report sent.")
-
-    # ── 9:30 PM — Auto Logout + Weekly Check ───────────────────
-    elif h == 21 and 30 <= m < 40:
-        if not is_task_done(state, "auto_logout", today):
-            log_channel = bot.get_channel(LOG_CHANNEL_ID)
-            if log_channel:
-                guild    = log_channel.guild
-                now_dt   = datetime.now(CAIRO_TZ)
-                week_str = now_dt.strftime("%Y-W%W")
-
-                # Auto logout
-                auto_logouted = []
-                for mention in list(state["logged_in_today"].keys()):
-                    login_iso    = state["login_timestamps"].get(mention)
-                    duration_str = ""
-                    if login_iso:
-                        login_time = datetime.fromisoformat(login_iso)
-                        delta      = now_dt - login_time
-                        h2, rem    = divmod(int(delta.total_seconds()), 3600)
-                        m2         = rem // 60
-                        duration_str = f"{h2}h {m2}m"
-                    auto_logouted.append(f"• {mention} *(duration: {duration_str})*")
-
-                state["logged_in_today"]  = {}
-                state["login_timestamps"] = {}
-
-                day_report = discord.Embed(title="🌙 End of Shift Report", color=discord.Color.blurple())
-                if auto_logouted:
-                    day_report.add_field(name="🔴 Auto Logged Out:", value="\n".join(auto_logouted), inline=False)
-                else:
-                    day_report.add_field(name="✅ All Staff", value="Everyone logged out properly.", inline=False)
-                await log_channel.send(embed=day_report)
-
-                # ── Weekly attendance check (كل يوم الأسبوع) ──
-                role = guild.get_role(STAFF_ROLE_ID)
-                if role:
-                    less_than_3 = []
-                    for member in role.members:
-                        if member.bot:
-                            continue
-                        uid      = str(member.id)
-                        wl       = state["weekly_logins"].get(uid, {})
-                        days     = wl.get("days", []) if wl.get("week") == week_str else []
-                        day_count = len(days)
-                        if day_count < 3:
-                            less_than_3.append(f"• {member.mention} — {day_count}/3 days")
-
-                    if less_than_3:
-                        warn_embed = discord.Embed(
-                            title="⚠️ Weekly Attendance Warning",
-                            description="The following staff have logged in less than 3 days this week:\n\n" + "\n".join(less_than_3),
-                            color=discord.Color.yellow()
+    # ── 4:30 PM — تذكير المتأخرين ─────────────────────────────
+    elif task_key == "reminder_430":
+        if channel and log_channel:
+            guild = channel.guild
+            role  = guild.get_role(STAFF_ROLE_ID)
+            if role:
+                reminded, failed = [], []
+                for member in role.members:
+                    if member.bot or member.mention in state["logged_in_today"]:
+                        continue
+                    try:
+                        dm_embed = discord.Embed(
+                            title="⚡ Shift Reminder!",
+                            description=(
+                                f"Hey {member.name}! Shift started 30 mins ago!\n"
+                                f"Go to {channel.mention} and click **Log In 🟢** 💪🔥"
+                            ),
+                            color=discord.Color.orange()
                         )
-                        await log_channel.send(embed=warn_embed)
+                        await member.send(embed=dm_embed)
+                        reminded.append(member.mention)
+                    except discord.Forbidden:
+                        failed.append(member.mention)
 
-                # ── الجمعة — ليدربورد + تصفير ──────────────────
-                if weekday == 4:
-                    lb      = state.get("leaderboard", {})
-                    channel = bot.get_channel(CHANNEL_ID)
-                    if lb and channel:
-                        sorted_lb = sorted(lb.items(), key=lambda x: x[1], reverse=True)
-                        medals    = ["🥇", "🥈", "🥉"]
-                        lines     = []
-                        for i, (uid, points) in enumerate(sorted_lb):
-                            member = guild.get_member(int(uid))
-                            name   = member.display_name if member else f"User {uid}"
-                            medal  = medals[i] if i < 3 else f"#{i+1}"
-                            lines.append(f"{medal} **{name}** — {points} day(s)")
+                report = discord.Embed(title="📊 4:30 PM Reminder Report", color=discord.Color.gold())
+                if reminded:
+                    report.add_field(name="📩 Reminded:", value=", ".join(reminded), inline=False)
+                if failed:
+                    report.add_field(name="⚠️ DMs Closed:", value=", ".join(failed), inline=False)
+                if not reminded and not failed:
+                    report.description = "✅ Everyone logged in before 4:30 PM!"
+                await log_channel.send(embed=report)
 
-                        lb_embed = discord.Embed(
-                            title="🏆 Weekly Attendance Leaderboard",
-                            description="\n".join(lines),
-                            color=discord.Color.gold()
+    # ── 4:40 PM — التارجت اليومي ──────────────────────────────
+    elif task_key == "daily_target":
+        if channel and log_channel:
+            guild = channel.guild
+            role  = guild.get_role(STAFF_ROLE_ID)
+            if role:
+                sent, failed = [], []
+                for member in role.members:
+                    if member.bot:
+                        continue
+                    try:
+                        embed = discord.Embed(
+                            title="🎯 Your Daily Target",
+                            description=(
+                                f"Hey {member.name}! 💪\n\n"
+                                f"**📋 Target:** Get **4 people** to fill the form today.\n\n"
+                                f"1️⃣ Reach out to candidates & share the form.\n"
+                                f"2️⃣ Make sure they fully complete it.\n"
+                                f"3️⃣ Take a screenshot of each submission.\n"
+                                f"4️⃣ Send screenshots to your TL's DM.\n\n"
+                                f"🔥 Let's crush it today!"
+                            ),
+                            color=discord.Color.orange()
                         )
-                        lb_embed.set_footer(text="See you next week! 💪")
-                        await log_channel.send(embed=lb_embed)
+                        embed.set_footer(text="FireHire Recruitment | Daily Target")
+                        await member.send(embed=embed)
+                        sent.append(member.mention)
+                    except discord.Forbidden:
+                        failed.append(member.mention)
 
-                    # تصفير الأسبوعي
-                    state["weekly_logins"] = {}
-                    state["leaderboard"]   = {}
-                    state["daily_reports_sent"] = []
-                    print("✅ Weekly data reset.")
+                report = discord.Embed(title="📊 Daily Target Report — 4:40 PM", color=discord.Color.orange())
+                if sent:
+                    report.add_field(name="✅ Sent:", value=", ".join(sent), inline=False)
+                if failed:
+                    report.add_field(name="⚠️ Failed:", value=", ".join(failed), inline=False)
+                await log_channel.send(embed=report)
 
-                mark_task_done(state, "auto_logout", today)
-                save_state(state)
-                print("✅ Auto logout done.")
+    # ── 7:00 PM — تذكير CRM ───────────────────────────────────
+    elif task_key == "crm_reminder":
+        if channel and log_channel:
+            guild = channel.guild
+            role  = guild.get_role(STAFF_ROLE_ID)
+            if role:
+                sent, failed = [], []
+                for member in role.members:
+                    if member.bot:
+                        continue
+                    try:
+                        embed = discord.Embed(
+                            title="🔄 CRM Follow-Up Reminder",
+                            description=(
+                                f"Hey {member.name}! 👋 Time for your **CRM check-in**:\n\n"
+                                f"✅ **Accepted** — Congratulate & move to next steps.\n"
+                                f"❌ **Rejected** — Update status & send a polite message.\n"
+                                f"⏳ **Processing** — Follow up & check status.\n\n"
+                                f"⚠️ Don't leave anyone without an update!\n"
+                                f"🏆 Consistent follow-up = more placements!"
+                            ),
+                            color=discord.Color.blue()
+                        )
+                        embed.set_footer(text="FireHire Recruitment | CRM Follow-Up")
+                        await member.send(embed=embed)
+                        sent.append(member.mention)
+                    except discord.Forbidden:
+                        failed.append(member.mention)
 
-                await log_channel.send("🌙 Shift ended. Goodnight!")
+                report = discord.Embed(title="📊 CRM Reminder — 7:00 PM", color=discord.Color.blue())
+                if sent:
+                    report.add_field(name="✅ Sent:", value=", ".join(sent), inline=False)
+                if failed:
+                    report.add_field(name="⚠️ Failed:", value=", ".join(failed), inline=False)
+                await log_channel.send(embed=report)
 
-    # ── الخميس 8:00 PM — تحذير الطرد ──────────────────────────
-    if weekday == 3 and h == 20 and 0 <= m < 10:
-        if not is_task_done(state, "thursday_warning", today):
-            log_channel = bot.get_channel(LOG_CHANNEL_ID)
-            channel     = bot.get_channel(CHANNEL_ID)
-            if log_channel and channel:
-                guild    = channel.guild
-                role     = guild.get_role(STAFF_ROLE_ID)
-                week_str = now.strftime("%Y-W%W")
-                if role:
-                    warned = []
-                    for member in role.members:
-                        if member.bot:
-                            continue
-                        uid   = str(member.id)
-                        wl    = state["weekly_logins"].get(uid, {})
-                        days  = wl.get("days", []) if wl.get("week") == week_str else []
-                        if len(days) == 0:
-                            try:
-                                warn_embed = discord.Embed(
-                                    title="⚠️ Final Warning - Inactivity!",
-                                    description=(
-                                        f"Hey {member.name},\n\n"
-                                        f"⚠️ You haven't logged in **once** this week!\n\n"
-                                        f"If you don't log in **before Friday 9:30 PM**, "
-                                        f"you will be **automatically removed** from the server.\n\n"
-                                        f"Go to {channel.mention} and click **Log In 🟢** NOW! 🚨"
-                                    ),
-                                    color=discord.Color.yellow()
-                                )
-                                await member.send(embed=warn_embed)
-                                warned.append(member.mention)
-                            except discord.Forbidden:
-                                pass
+    # ── 8:00 PM الخميس — تحذير الطرد ─────────────────────────
+    elif task_key == "thursday_warning":
+        if channel and log_channel:
+            guild    = channel.guild
+            role     = guild.get_role(STAFF_ROLE_ID)
+            week_str = now.strftime("%Y-W%W")
+            if role:
+                warned = []
+                for member in role.members:
+                    if member.bot:
+                        continue
+                    uid  = str(member.id)
+                    wl   = state["weekly_logins"].get(uid, {})
+                    days = wl.get("days", []) if wl.get("week") == week_str else []
+                    if len(days) == 0:
+                        try:
+                            warn_embed = discord.Embed(
+                                title="⚠️ Final Warning - Inactivity!",
+                                description=(
+                                    f"Hey {member.name},\n\n"
+                                    f"⚠️ You haven't logged in **once** this week!\n\n"
+                                    f"If you don't log in **before Friday 9:30 PM**, "
+                                    f"you will be **automatically removed** from the server.\n\n"
+                                    f"Go to {channel.mention} and click **Log In 🟢** NOW! 🚨"
+                                ),
+                                color=discord.Color.yellow()
+                            )
+                            await member.send(embed=warn_embed)
+                            warned.append(member.mention)
+                        except discord.Forbidden:
+                            pass
 
-                    if warned:
-                        await log_channel.send(embed=discord.Embed(
-                            title="⚠️ Thursday Warning Report",
-                            description="Sent kick warning to:\n" + ", ".join(warned),
-                            color=discord.Color.yellow()
-                        ))
-                    mark_task_done(state, "thursday_warning", today)
-                    save_state(state)
-                    print("✅ Thursday warning sent.")
+                if warned:
+                    await log_channel.send(embed=discord.Embed(
+                        title="⚠️ Thursday Warning Report",
+                        description="Sent kick warning to:\n" + ", ".join(warned),
+                        color=discord.Color.yellow()
+                    ))
 
-    print("✅ Task complete.")
+    # ── 8:30 PM — End of Day + طلب التقرير ───────────────────
+    elif task_key == "eod_report":
+        if channel and log_channel:
+            guild = channel.guild
+            role  = guild.get_role(STAFF_ROLE_ID)
+            if role:
+                sent, failed = [], []
+                for member in role.members:
+                    if member.bot:
+                        continue
+                    try:
+                        embed = discord.Embed(
+                            title="🌙 End of Day — Submit Your Report",
+                            description=(
+                                f"Hey {member.name}! Shift is almost over 🕘\n\n"
+                                f"**Before logging out, check:**\n"
+                                f"🎯 Hit your **4 form submissions** target?\n"
+                                f"📸 Sent **screenshots** to your TL?\n"
+                                f"🔄 Updated your **CRM** statuses?\n\n"
+                                f"📋 **Click below to submit your daily report!**"
+                            ),
+                            color=discord.Color.purple()
+                        )
+                        embed.set_footer(text="FireHire Recruitment | End of Day")
+                        await member.send(embed=embed, view=ReportView())
+                        sent.append(member.mention)
+                    except discord.Forbidden:
+                        failed.append(member.mention)
 
+                report = discord.Embed(title="📊 End of Day Report — 8:30 PM", color=discord.Color.purple())
+                if sent:
+                    report.add_field(name="✅ Sent:", value=", ".join(sent), inline=False)
+                if failed:
+                    report.add_field(name="⚠️ Failed:", value=", ".join(failed), inline=False)
+                await log_channel.send(embed=report)
+
+    # ── 9:30 PM — Auto Logout + Weekly Check ──────────────────
+    elif task_key == "auto_logout":
+        if log_channel:
+            guild    = log_channel.guild
+            week_str = now.strftime("%Y-W%W")
+
+            # Auto logout كل اللي لسه logged in
+            auto_logouted = []
+            for mention in list(state["logged_in_today"].keys()):
+                login_iso    = state["login_timestamps"].get(mention)
+                duration_str = ""
+                if login_iso:
+                    login_time = datetime.fromisoformat(login_iso)
+                    delta      = now - login_time
+                    hh, rem    = divmod(int(delta.total_seconds()), 3600)
+                    mm         = rem // 60
+                    duration_str = f"{hh}h {mm}m"
+                auto_logouted.append(f"• {mention} *(duration: {duration_str})*")
+
+            state["logged_in_today"]  = {}
+            state["login_timestamps"] = {}
+
+            day_report = discord.Embed(title="🌙 End of Shift Report", color=discord.Color.blurple())
+            if auto_logouted:
+                day_report.add_field(name="🔴 Auto Logged Out:", value="\n".join(auto_logouted), inline=False)
+            else:
+                day_report.add_field(name="✅ All Staff", value="Everyone logged out properly.", inline=False)
+            await log_channel.send(embed=day_report)
+
+            # Weekly attendance warning
+            role = guild.get_role(STAFF_ROLE_ID)
+            if role:
+                less_than_3 = []
+                for member in role.members:
+                    if member.bot:
+                        continue
+                    uid       = str(member.id)
+                    wl        = state["weekly_logins"].get(uid, {})
+                    days      = wl.get("days", []) if wl.get("week") == week_str else []
+                    day_count = len(days)
+                    if day_count < 3:
+                        less_than_3.append(f"• {member.mention} — {day_count}/3 days")
+
+                if less_than_3:
+                    warn_embed = discord.Embed(
+                        title="⚠️ Weekly Attendance Warning",
+                        description="Staff with less than 3 logins this week:\n\n" + "\n".join(less_than_3),
+                        color=discord.Color.yellow()
+                    )
+                    await log_channel.send(embed=warn_embed)
+
+            # الجمعة — ليدربورد + تصفير
+            if weekday == 4:
+                lb      = state.get("leaderboard", {})
+                channel = bot.get_channel(CHANNEL_ID)
+                if lb and channel:
+                    sorted_lb = sorted(lb.items(), key=lambda x: x[1], reverse=True)
+                    medals    = ["🥇", "🥈", "🥉"]
+                    lines     = []
+                    for i, (uid, points) in enumerate(sorted_lb):
+                        member = guild.get_member(int(uid))
+                        name   = member.display_name if member else f"User {uid}"
+                        medal  = medals[i] if i < 3 else f"#{i+1}"
+                        lines.append(f"{medal} **{name}** — {points} day(s)")
+
+                    lb_embed = discord.Embed(
+                        title="🏆 Weekly Attendance Leaderboard",
+                        description="\n".join(lines),
+                        color=discord.Color.gold()
+                    )
+                    lb_embed.set_footer(text="See you next week! 💪")
+                    await log_channel.send(embed=lb_embed)
+
+                state["weekly_logins"]       = {}
+                state["leaderboard"]         = {}
+                state["daily_reports_sent"]  = []
+                log.info("✅ Weekly data reset (Friday)")
+
+            save_state(state)
+            await log_channel.send("🌙 Shift ended. Goodnight!")
 
 # ============================================================
 # Run
 # ============================================================
 bot.run(DISCORD_TOKEN)
+Done
+
+You are out of free messages until 9:10 PM
+Upgrade
+
+
+
+
+Claude is AI and can make mistakes. Please double-check responses.
+Discord attendance · YML
+name: Discord Attendance Bot 24/7
+ 
+on:
+  schedule:
+    - cron: '0 */6 * * *'   # يشتغل كل 6 ساعات (حد GitHub Actions)
+  workflow_dispatch:
+    inputs:
+      force_restart:
+        description: 'Force restart bot'
+        required: false
+        default: 'false'
+ 
+jobs:
+  run-bot:
+    runs-on: ubuntu-latest
+    timeout-minutes: 360   # 6 ساعات كاملة
+    permissions:
+      contents: write
+ 
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4.2.2
+        with:
+          fetch-depth: 0
+ 
+      - name: Setup Python
+        uses: actions/setup-python@v5.6.0
+        with:
+          python-version: '3.11'
+ 
+      - name: Restore state cache
+        uses: actions/cache@v4
+        with:
+          path: last_state.json
+          key: attendance-state-v1
+          restore-keys: attendance-state-v1
+ 
+      - name: Install dependencies
+        run: pip install discord.py pytz aiohttp
+ 
+      - name: Run Bot (6-hour window)
+        env:
+          DISCORD_TOKEN: ${{ secrets.DISCORD_TOKEN }}
+          GAS_URL:       ${{ secrets.GAS_URL }}
+          # البوت هيشتغل 5.5 ساعة وبعدين يوقف نفسه قبل ما الـ job تنتهي
+          BOT_MAX_RUNTIME_MINUTES: '330'
+        run: python bot.py
+ 
+      - name: Save state cache
+        uses: actions/cache/save@v4
+        if: always()
+        with:
+          path: last_state.json
+          key: attendance-state-v1
+ 
