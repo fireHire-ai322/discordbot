@@ -1,20 +1,19 @@
-name: Discord Attendance Bot
+name: Discord Attendance Bot 24/7
 
 on:
   schedule:
-    - cron: '30 12 * * 1-5'   # 3:30 PM Cairo — رسالة تنبيه
-    - cron: '0 13 * * 1-5'    # 4:00 PM Cairo — فتح الحضور
-    - cron: '30 13 * * 1-5'   # 4:30 PM Cairo — تذكير المتأخرين
-    - cron: '40 13 * * 1-5'   # 4:40 PM Cairo — التارجت اليومي
-    - cron: '0 16 * * 1-5'    # 7:00 PM Cairo — تذكير CRM
-    - cron: '30 17 * * 1-5'   # 8:30 PM Cairo — End of Day
-    - cron: '0 17 * * 4'      # 8:00 PM Cairo الخميس — تحذير الطرد
-    - cron: '30 18 * * 1-5'   # 9:30 PM Cairo — Auto Logout
+    - cron: '0 */6 * * *'   # يشتغل كل 6 ساعات (حد GitHub Actions)
   workflow_dispatch:
+    inputs:
+      force_restart:
+        description: 'Force restart bot'
+        required: false
+        default: 'false'
 
 jobs:
   run-bot:
     runs-on: ubuntu-latest
+    timeout-minutes: 360   # 6 ساعات كاملة
     permissions:
       contents: write
 
@@ -39,10 +38,12 @@ jobs:
       - name: Install dependencies
         run: pip install discord.py pytz aiohttp
 
-      - name: Run Bot
+      - name: Run Bot (6-hour window)
         env:
           DISCORD_TOKEN: ${{ secrets.DISCORD_TOKEN }}
           GAS_URL:       ${{ secrets.GAS_URL }}
+          # البوت هيشتغل 5.5 ساعة وبعدين يوقف نفسه قبل ما الـ job تنتهي
+          BOT_MAX_RUNTIME_MINUTES: '330'
         run: python bot.py
 
       - name: Save state cache
