@@ -1,4 +1,4 @@
-
+"""
 FireHire RS — Discord Attendance Bot
 بيشتغل على GitHub Actions
 كل run بيعمل action واحد بس حسب الوقت
