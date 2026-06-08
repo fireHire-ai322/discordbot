@@ -1,16 +1,15 @@
-
 name: Discord Attendance Bot
 
 on:
   schedule:
-    - cron: '30 13 * * 1-5'   # 3:30 PM Cairo — رسالة تنبيه
-    - cron: '0 14 * * 1-5'    # 4:00 PM Cairo — فتح الحضور
-    - cron: '30 14 * * 1-5'   # 4:30 PM Cairo — تذكير المتأخرين
-    - cron: '40 14 * * 1-5'   # 4:40 PM Cairo — التارجت اليومي
-    - cron: '0 17 * * 1-5'    # 7:00 PM Cairo — تذكير CRM
-    - cron: '30 18 * * 1-5'   # 8:30 PM Cairo — End of Day
-    - cron: '0 20 * * 4'      # 8:00 PM Cairo الخميس — تحذير الطرد
-    - cron: '30 19 * * 1-5'   # 9:30 PM Cairo — Auto Logout
+    - cron: '30 12 * * 1-5'   # 3:30 PM Cairo — رسالة تنبيه
+    - cron: '0 13 * * 1-5'    # 4:00 PM Cairo — فتح الحضور
+    - cron: '30 13 * * 1-5'   # 4:30 PM Cairo — تذكير المتأخرين
+    - cron: '40 13 * * 1-5'   # 4:40 PM Cairo — التارجت اليومي
+    - cron: '0 16 * * 1-5'    # 7:00 PM Cairo — تذكير CRM
+    - cron: '30 17 * * 1-5'   # 8:30 PM Cairo — End of Day
+    - cron: '0 17 * * 4'      # 8:00 PM Cairo الخميس — تحذير الطرد
+    - cron: '30 18 * * 1-5'   # 9:30 PM Cairo — Auto Logout
   workflow_dispatch:
 
 jobs:
