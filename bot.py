@@ -653,6 +653,16 @@ async def run_task(task_key, state, now, weekday, today):
             save_state(state)
             await log_channel.send("🌙 Shift ended. Goodnight!")
 
+
+@bot.command()
+@commands.has_permissions(administrator=True)
+async def setup_attendance(ctx):
+    await ctx.message.delete()
+    state = load_state()
+    state["logged_in_today"]  = {}
+    state["login_timestamps"] = {}
+    save_state(state)
+    await ctx.send(embed=create_attendance_embed({}), view=AttendanceView())
 # ============================================================
 # Run
 # ============================================================
