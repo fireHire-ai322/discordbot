@@ -37,6 +37,14 @@ GAS_URL        = os.environ.get("GAS_URL", "")
 
 CAIRO_TZ            = pytz.timezone("Africa/Cairo")
 MAX_RUNTIME_MINUTES = int(os.environ.get("BOT_MAX_RUNTIME_MINUTES", "330"))
+# ============================================================
+# Bot
+# ============================================================
+intents = discord.Intents.default()
+intents.message_content = True
+intents.members = True
+bot = commands.Bot(command_prefix="!", intents=intents)
+
 
 TEAM_MAP = {
     "A": {"tl_role": "TL-A", "rec_role": "Rec-A", "channel": "hussein-team-a"},
@@ -317,13 +325,6 @@ class ReportView(discord.ui.View):
             return
         await interaction.response.send_modal(RecruiterReportModal())
 
-# ============================================================
-# Bot
-# ============================================================
-intents = discord.Intents.default()
-intents.message_content = True
-intents.members = True
-bot = commands.Bot(command_prefix="!", intents=intents)
 
 @bot.event
 async def on_ready():
