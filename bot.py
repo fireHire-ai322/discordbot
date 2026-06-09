@@ -1,7 +1,8 @@
 """
 FireHire RS — Discord Attendance Bot
-long-running على GitHub Actions — بيشتغل 5.5 ساعة ثم يعيد نفسه
-الـ scheduler داخلي بيصحى كل 30 ثانية ويتحقق من المواعيد بتوقيت القاهرة
+- بيحفظ الـ state في Google Sheets عن طريق GAS
+- بيشتغل 5.5 ساعة وبيوقف نفسه
+- GitHub Actions بيشغله كل 6 ساعات
 """
 
 import discord
@@ -34,11 +35,7 @@ STAFF_ROLE_ID  = 1461551955909410972
 LOG_CHANNEL_ID = 1511158605875904622
 GAS_URL        = os.environ.get("GAS_URL", "")
 
-CAIRO_TZ   = pytz.timezone("Africa/Cairo")
-STATE_FILE = "last_state.json"
-
-# كم دقيقة يشتغل البوت قبل ما يوقف نفسه (5.5 ساعة = 330 دقيقة)
-# الـ workflow بيشغّل job جديدة كل 6 ساعات فمفيش gap
+CAIRO_TZ            = pytz.timezone("Africa/Cairo")
 MAX_RUNTIME_MINUTES = int(os.environ.get("BOT_MAX_RUNTIME_MINUTES", "330"))
 
 TEAM_MAP = {
@@ -53,36 +50,74 @@ TEAM_MAP = {
     "G": {"tl_role": "TL-G", "rec_role": "Rec-G", "channel": "dalia-team-g"},
 }
 
-# ============================================================
-# Scheduled Tasks
-# (hour_cairo, minute, task_key, weekdays)
-# weekdays: None = كل الأيام | set = أيام معينة (0=Mon…4=Fri)
-# ============================================================
 TASKS = [
-    (15, 30, "pre_attendance_msg", {0, 1, 2, 3, 4}),  # 3:30 PM — تنبيه
-    (16,  0, "attendance_open",    {0, 1, 2, 3, 4}),  # 4:00 PM — فتح الحضور
-    (16, 30, "reminder_430",       {0, 1, 2, 3, 4}),  # 4:30 PM — تذكير المتأخرين
-    (16, 40, "daily_target",       {0, 1, 2, 3, 4}),  # 4:40 PM — التارجت اليومي
-    (19,  0, "crm_reminder",       {0, 1, 2, 3, 4}),  # 7:00 PM — تذكير CRM
-    (20,  0, "thursday_warning",   {3}),               # 8:00 PM الخميس فقط — تحذير الطرد
-    (20, 30, "eod_report",         {0, 1, 2, 3, 4}),  # 8:30 PM — End of Day
-    (21, 30, "auto_logout",        {0, 1, 2, 3, 4}),  # 9:30 PM — Auto Logout
+    (15, 30, "pre_attendance_msg", {0,1,2,3,4}),
+    (16,  0, "attendance_open",    {0,1,2,3,4}),
+    (16, 30, "reminder_430",       {0,1,2,3,4}),
+    (16, 40, "daily_target",       {0,1,2,3,4}),
+    (19,  0, "crm_reminder",       {0,1,2,3,4}),
+    (20,  0, "thursday_warning",   {3}),
+    (20, 30, "eod_report",         {0,1,2,3,4}),
+    (21, 30, "auto_logout",        {0,1,2,3,4}),
 ]
 
 # ============================================================
-# State Management
+# GAS API — كل التعامل مع Google Sheets هنا
 # ============================================================
+async def gas_request(action, params={}):
+    if not GAS_URL:
+        log.warning("GAS_URL not set!")
+        return None
+    try:
+        all_params = {"action": action, **params}
+        async with aiohttp.ClientSession() as session:
+            async with session.get(GAS_URL, params=all_params, timeout=aiohttp.ClientTimeout(total=15)) as resp:
+                result = await resp.json(content_type=None)
+                log.info(f"GAS [{action}] → {result}")
+                return result
+    except Exception as e:
+        log.error(f"GAS error [{action}]: {e}")
+        return None
+
+async def get_weekly_ids():
+    result = await gas_request("getWeeklyAttendance")
+    if result and "ids" in result:
+        return set(str(i) for i in result["ids"])
+    return set()
+
+async def save_attendance(user_id):
+    await gas_request("saveAttendance", {"userId": str(user_id)})
+
+async def clear_weekly():
+    await gas_request("clearWeeklyAttendance")
+
+async def get_leaderboard():
+    result = await gas_request("getLeaderboard")
+    if result and "data" in result:
+        return result["data"]
+    return {}
+
+async def add_leaderboard_point(user_id):
+    await gas_request("addLeaderboardPoint", {"userId": str(user_id)})
+
+async def reset_leaderboard():
+    await gas_request("resetLeaderboard")
+
+# ============================================================
+# Local State — بس للحاجات اللي محتاجها في نفس الـ run
+# (logged_in_today, login_timestamps, daily_reports_sent, tasks_done)
+# ============================================================
+STATE_FILE = "last_state.json"
+
 def load_state():
     if os.path.exists(STATE_FILE):
         with open(STATE_FILE, "r", encoding="utf-8") as f:
             return json.load(f)
     return {
-        "weekly_logins": {},
-        "logged_in_today": {},
-        "login_timestamps": {},
+        "logged_in_today":    {},
+        "login_timestamps":   {},
         "daily_reports_sent": [],
-        "tasks_done": [],
-        "leaderboard": {}
+        "tasks_done":         []
     }
 
 def save_state(state):
@@ -96,11 +131,7 @@ def mark_task_done(state, task_key, date_str):
     key = f"{task_key}_{date_str}"
     if key not in state["tasks_done"]:
         state["tasks_done"].append(key)
-    # مسح القديم (أكتر من 7 أيام)
-    state["tasks_done"] = [
-        t for t in state["tasks_done"]
-        if t.split("_")[-1] >= date_str
-    ]
+    state["tasks_done"] = [t for t in state["tasks_done"] if t.split("_")[-1] >= date_str]
 
 # ============================================================
 # Helpers
@@ -137,7 +168,7 @@ def create_attendance_embed(logged_in_today):
     return embed
 
 # ============================================================
-# Modal — تقرير الريكروتر
+# Modal
 # ============================================================
 class RecruiterReportModal(discord.ui.Modal, title="📋 Daily Report"):
     candidates_count = discord.ui.TextInput(
@@ -172,15 +203,16 @@ class RecruiterReportModal(discord.ui.Modal, title="📋 Daily Report"):
         letter = get_team_letter_for_member(member)
         tl     = get_tl_for_team(guild, letter) if letter else None
 
-        if str(interaction.user.id) not in state["daily_reports_sent"]:
-            state["daily_reports_sent"].append(str(interaction.user.id))
+        uid = str(interaction.user.id)
+        if uid not in state["daily_reports_sent"]:
+            state["daily_reports_sent"].append(uid)
             save_state(state)
 
         if tl:
-            now = datetime.now(CAIRO_TZ).strftime("%I:%M %p")
+            now_str = datetime.now(CAIRO_TZ).strftime("%I:%M %p")
             report_embed = discord.Embed(title="📊 Recruiter Daily Report", color=discord.Color.green())
             report_embed.add_field(name="👔 Recruiter",    value=member.mention, inline=True)
-            report_embed.add_field(name="🕐 Submitted At", value=now, inline=True)
+            report_embed.add_field(name="🕐 Submitted At", value=now_str, inline=True)
             report_embed.add_field(name="\u200B", value="\u200B", inline=False)
             report_embed.add_field(name="🎯 Candidates",  value=self.candidates_count.value, inline=True)
             report_embed.add_field(name="📸 Screenshots", value=self.screenshots_sent.value, inline=True)
@@ -197,7 +229,7 @@ class RecruiterReportModal(discord.ui.Modal, title="📋 Daily Report"):
             await interaction.followup.send("✅ Report submitted, but couldn't find your TL.", ephemeral=True)
 
 # ============================================================
-# Attendance Buttons
+# Views
 # ============================================================
 class AttendanceView(discord.ui.View):
     def __init__(self):
@@ -209,26 +241,15 @@ class AttendanceView(discord.ui.View):
         user         = interaction.user
         current_time = datetime.now(CAIRO_TZ).strftime("%I:%M %p")
         now_dt       = datetime.now(CAIRO_TZ)
-        today_str    = now_dt.strftime("%Y-%m-%d")
-        week_str     = now_dt.strftime("%Y-W%W")
 
         if user.mention not in state["logged_in_today"]:
-            state["logged_in_today"][user.mention]   = current_time
-            state["login_timestamps"][user.mention]  = now_dt.isoformat()
-
-            uid = str(user.id)
-            if uid not in state["weekly_logins"]:
-                state["weekly_logins"][uid] = {"week": week_str, "days": []}
-            if state["weekly_logins"][uid].get("week") != week_str:
-                state["weekly_logins"][uid] = {"week": week_str, "days": []}
-            if today_str not in state["weekly_logins"][uid]["days"]:
-                state["weekly_logins"][uid]["days"].append(today_str)
-
-            if uid not in state["leaderboard"]:
-                state["leaderboard"][uid] = 0
-            state["leaderboard"][uid] += 1
-
+            state["logged_in_today"][user.mention]  = current_time
+            state["login_timestamps"][user.mention] = now_dt.isoformat()
             save_state(state)
+
+            # حفظ في Google Sheets
+            await save_attendance(user.id)
+            await add_leaderboard_point(user.id)
 
             await interaction.message.edit(embed=create_attendance_embed(state["logged_in_today"]))
             await interaction.response.send_message(f"✅ Logged in at {current_time} 🚀", ephemeral=True)
@@ -256,10 +277,10 @@ class AttendanceView(discord.ui.View):
             login_iso    = state["login_timestamps"].get(user.mention)
             duration_str = ""
             if login_iso:
-                login_time = datetime.fromisoformat(login_iso)
-                delta      = now_dt - login_time
-                h, rem     = divmod(int(delta.total_seconds()), 3600)
-                m          = rem // 60
+                login_time   = datetime.fromisoformat(login_iso)
+                delta        = now_dt - login_time
+                h, rem       = divmod(int(delta.total_seconds()), 3600)
+                m            = rem // 60
                 duration_str = f"{h}h {m}m"
 
             del state["logged_in_today"][user.mention]
@@ -283,6 +304,7 @@ class AttendanceView(discord.ui.View):
         else:
             await interaction.response.send_message("⚠️ You haven't logged in yet!", ephemeral=True)
 
+
 class ReportView(discord.ui.View):
     def __init__(self):
         super().__init__(timeout=None)
@@ -296,17 +318,13 @@ class ReportView(discord.ui.View):
         await interaction.response.send_modal(RecruiterReportModal())
 
 # ============================================================
-# Bot Setup
+# Bot
 # ============================================================
 intents = discord.Intents.default()
 intents.message_content = True
 intents.members = True
 bot = commands.Bot(command_prefix="!", intents=intents)
 
-# ============================================================
-# Scheduler Loop — قلب البوت
-# يصحى كل 30 ثانية ويشوف إيه التاسك المفروض يتشغل
-# ============================================================
 @bot.event
 async def on_ready():
     log.info(f"✅ Bot online: {bot.user}")
@@ -314,15 +332,17 @@ async def on_ready():
     bot.add_view(ReportView())
     bot.loop.create_task(scheduler_loop())
 
+# ============================================================
+# Scheduler
+# ============================================================
 async def scheduler_loop():
-    log.info("⏰ Internal scheduler started")
+    log.info("⏰ Scheduler started")
     start_time = time.monotonic()
 
     while True:
-        # ── هل عدّينا الـ MAX_RUNTIME؟ → اقفل نفسك عشان الـ job الجديدة تبدأ
         elapsed = (time.monotonic() - start_time) / 60
         if elapsed >= MAX_RUNTIME_MINUTES:
-            log.info(f"⏳ Max runtime ({MAX_RUNTIME_MINUTES}min) reached. Closing gracefully...")
+            log.info(f"⏳ Max runtime reached. Closing...")
             await bot.close()
             return
 
@@ -334,39 +354,33 @@ async def scheduler_loop():
         state   = load_state()
 
         for task_h, task_m, task_key, weekdays in TASKS:
-            # تحقق اليوم
             if weekdays is not None and weekday not in weekdays:
                 continue
-
-            # تحقق الوقت — ±29 ثانية tolerance
             task_time = now.replace(hour=task_h, minute=task_m, second=0, microsecond=0)
             diff_secs = abs((now - task_time).total_seconds())
             if diff_secs > 300:
                 continue
-
-            # تحقق إنها مش اتعملت النهارده
             if is_task_done(state, task_key, today):
                 continue
 
-            log.info(f"▶️  Running task: {task_key} at {now.strftime('%H:%M:%S')}")
+            log.info(f"▶️ Running: {task_key}")
             try:
                 await run_task(task_key, state, now, weekday, today)
                 mark_task_done(state, task_key, today)
                 save_state(state)
-                log.info(f"✅ Task done: {task_key}")
+                log.info(f"✅ Done: {task_key}")
             except Exception as e:
-                log.error(f"❌ Task {task_key} failed: {e}", exc_info=True)
+                log.error(f"❌ {task_key} failed: {e}", exc_info=True)
 
         await asyncio.sleep(30)
 
 # ============================================================
-# Task Runner
+# Tasks
 # ============================================================
 async def run_task(task_key, state, now, weekday, today):
     channel     = bot.get_channel(CHANNEL_ID)
     log_channel = bot.get_channel(LOG_CHANNEL_ID)
 
-    # ── 3:30 PM — رسالة تنبيه ─────────────────────────────────
     if task_key == "pre_attendance_msg":
         if channel:
             role  = channel.guild.get_role(STAFF_ROLE_ID)
@@ -384,7 +398,6 @@ async def run_task(task_key, state, now, weekday, today):
             embed.set_footer(text="FireHire Recruitment | Attendance Reminder")
             await channel.send(embed=embed)
 
-    # ── 4:00 PM — فتح الحضور ──────────────────────────────────
     elif task_key == "attendance_open":
         if channel:
             state["logged_in_today"]    = {}
@@ -394,7 +407,6 @@ async def run_task(task_key, state, now, weekday, today):
             await channel.purge(limit=5, check=lambda msg: msg.author == bot.user)
             await channel.send(embed=create_attendance_embed({}), view=AttendanceView())
 
-    # ── 4:30 PM — تذكير المتأخرين ─────────────────────────────
     elif task_key == "reminder_430":
         if channel and log_channel:
             guild = channel.guild
@@ -407,10 +419,7 @@ async def run_task(task_key, state, now, weekday, today):
                     try:
                         dm_embed = discord.Embed(
                             title="⚡ Shift Reminder!",
-                            description=(
-                                f"Hey {member.name}! Shift started 30 mins ago!\n"
-                                f"Go to {channel.mention} and click **Log In 🟢** 💪🔥"
-                            ),
+                            description=f"Hey {member.name}! Shift started 30 mins ago!\nGo to {channel.mention} and click **Log In 🟢** 💪🔥",
                             color=discord.Color.orange()
                         )
                         await member.send(embed=dm_embed)
@@ -427,7 +436,6 @@ async def run_task(task_key, state, now, weekday, today):
                     report.description = "✅ Everyone logged in before 4:30 PM!"
                 await log_channel.send(embed=report)
 
-    # ── 4:40 PM — التارجت اليومي ──────────────────────────────
     elif task_key == "daily_target":
         if channel and log_channel:
             guild = channel.guild
@@ -457,14 +465,13 @@ async def run_task(task_key, state, now, weekday, today):
                     except discord.Forbidden:
                         failed.append(member.mention)
 
-                report = discord.Embed(title="📊 Daily Target Report — 4:40 PM", color=discord.Color.orange())
+                report = discord.Embed(title="📊 Daily Target — 4:40 PM", color=discord.Color.orange())
                 if sent:
                     report.add_field(name="✅ Sent:", value=", ".join(sent), inline=False)
                 if failed:
                     report.add_field(name="⚠️ Failed:", value=", ".join(failed), inline=False)
                 await log_channel.send(embed=report)
 
-    # ── 7:00 PM — تذكير CRM ───────────────────────────────────
     elif task_key == "crm_reminder":
         if channel and log_channel:
             guild = channel.guild
@@ -500,37 +507,32 @@ async def run_task(task_key, state, now, weekday, today):
                     report.add_field(name="⚠️ Failed:", value=", ".join(failed), inline=False)
                 await log_channel.send(embed=report)
 
-    # ── 8:00 PM الخميس — تحذير الطرد ─────────────────────────
     elif task_key == "thursday_warning":
         if channel and log_channel:
             guild    = channel.guild
             role     = guild.get_role(STAFF_ROLE_ID)
-            week_str = now.strftime("%Y-W%W")
+            weekly_ids = await get_weekly_ids()
             if role:
                 warned = []
                 for member in role.members:
-                    if member.bot:
+                    if member.bot or str(member.id) in weekly_ids:
                         continue
-                    uid  = str(member.id)
-                    wl   = state["weekly_logins"].get(uid, {})
-                    days = wl.get("days", []) if wl.get("week") == week_str else []
-                    if len(days) == 0:
-                        try:
-                            warn_embed = discord.Embed(
-                                title="⚠️ Final Warning - Inactivity!",
-                                description=(
-                                    f"Hey {member.name},\n\n"
-                                    f"⚠️ You haven't logged in **once** this week!\n\n"
-                                    f"If you don't log in **before Friday 9:30 PM**, "
-                                    f"you will be **automatically removed** from the server.\n\n"
-                                    f"Go to {channel.mention} and click **Log In 🟢** NOW! 🚨"
-                                ),
-                                color=discord.Color.yellow()
-                            )
-                            await member.send(embed=warn_embed)
-                            warned.append(member.mention)
-                        except discord.Forbidden:
-                            pass
+                    try:
+                        warn_embed = discord.Embed(
+                            title="⚠️ Final Warning - Inactivity!",
+                            description=(
+                                f"Hey {member.name},\n\n"
+                                f"⚠️ You haven't logged in **once** this week!\n\n"
+                                f"If you don't log in **before Friday 9:30 PM**, "
+                                f"you will be **automatically removed** from the server.\n\n"
+                                f"Go to {channel.mention} and click **Log In 🟢** NOW! 🚨"
+                            ),
+                            color=discord.Color.yellow()
+                        )
+                        await member.send(embed=warn_embed)
+                        warned.append(member.mention)
+                    except discord.Forbidden:
+                        pass
 
                 if warned:
                     await log_channel.send(embed=discord.Embed(
@@ -539,7 +541,6 @@ async def run_task(task_key, state, now, weekday, today):
                         color=discord.Color.yellow()
                     ))
 
-    # ── 8:30 PM — End of Day + طلب التقرير ───────────────────
     elif task_key == "eod_report":
         if channel and log_channel:
             guild = channel.guild
@@ -568,20 +569,18 @@ async def run_task(task_key, state, now, weekday, today):
                     except discord.Forbidden:
                         failed.append(member.mention)
 
-                report = discord.Embed(title="📊 End of Day Report — 8:30 PM", color=discord.Color.purple())
+                report = discord.Embed(title="📊 End of Day — 8:30 PM", color=discord.Color.purple())
                 if sent:
                     report.add_field(name="✅ Sent:", value=", ".join(sent), inline=False)
                 if failed:
                     report.add_field(name="⚠️ Failed:", value=", ".join(failed), inline=False)
                 await log_channel.send(embed=report)
 
-    # ── 9:30 PM — Auto Logout + Weekly Check ──────────────────
     elif task_key == "auto_logout":
         if log_channel:
             guild    = log_channel.guild
             week_str = now.strftime("%Y-W%W")
 
-            # Auto logout كل اللي لسه logged in
             auto_logouted = []
             for mention in list(state["logged_in_today"].keys()):
                 login_iso    = state["login_timestamps"].get(mention)
@@ -604,34 +603,32 @@ async def run_task(task_key, state, now, weekday, today):
                 day_report.add_field(name="✅ All Staff", value="Everyone logged out properly.", inline=False)
             await log_channel.send(embed=day_report)
 
-            # Weekly attendance warning
-            role = guild.get_role(STAFF_ROLE_ID)
+            # Weekly attendance warning من Google Sheets
+            role       = guild.get_role(STAFF_ROLE_ID)
+            weekly_ids = await get_weekly_ids()
             if role:
                 less_than_3 = []
                 for member in role.members:
                     if member.bot:
                         continue
-                    uid       = str(member.id)
-                    wl        = state["weekly_logins"].get(uid, {})
-                    days      = wl.get("days", []) if wl.get("week") == week_str else []
-                    day_count = len(days)
-                    if day_count < 3:
-                        less_than_3.append(f"• {member.mention} — {day_count}/3 days")
+                    # لو مش في الـ weekly_ids يعني مسجلش حضور الأسبوع ده
+                    if str(member.id) not in weekly_ids:
+                        less_than_3.append(f"• {member.mention} — 0 days this week")
 
                 if less_than_3:
                     warn_embed = discord.Embed(
                         title="⚠️ Weekly Attendance Warning",
-                        description="Staff with less than 3 logins this week:\n\n" + "\n".join(less_than_3),
+                        description="Staff with no logins this week:\n\n" + "\n".join(less_than_3),
                         color=discord.Color.yellow()
                     )
                     await log_channel.send(embed=warn_embed)
 
             # الجمعة — ليدربورد + تصفير
             if weekday == 4:
-                lb      = state.get("leaderboard", {})
+                lb      = await get_leaderboard()
                 channel = bot.get_channel(CHANNEL_ID)
                 if lb and channel:
-                    sorted_lb = sorted(lb.items(), key=lambda x: x[1], reverse=True)
+                    sorted_lb = sorted(lb.items(), key=lambda x: int(x[1]), reverse=True)
                     medals    = ["🥇", "🥈", "🥉"]
                     lines     = []
                     for i, (uid, points) in enumerate(sorted_lb):
@@ -642,15 +639,15 @@ async def run_task(task_key, state, now, weekday, today):
 
                     lb_embed = discord.Embed(
                         title="🏆 Weekly Attendance Leaderboard",
-                        description="\n".join(lines),
+                        description="\n".join(lines) if lines else "No data this week.",
                         color=discord.Color.gold()
                     )
                     lb_embed.set_footer(text="See you next week! 💪")
                     await log_channel.send(embed=lb_embed)
 
-                state["weekly_logins"]       = {}
-                state["leaderboard"]         = {}
-                state["daily_reports_sent"]  = []
+                await clear_weekly()
+                await reset_leaderboard()
+                state["daily_reports_sent"] = []
                 log.info("✅ Weekly data reset (Friday)")
 
             save_state(state)
