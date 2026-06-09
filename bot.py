@@ -244,7 +244,7 @@ class AttendanceView(discord.ui.View):
     def __init__(self):
         super().__init__(timeout=None)
 
-    @discord.ui.button(label="Log In 🟢", style=discord.ButtonStyle.green, custom_id="login_button")
+@discord.ui.button(label="Log In 🟢", style=discord.ButtonStyle.green, custom_id="login_button")
     async def login_button(self, interaction: discord.Interaction, button: discord.ui.Button):
         state        = load_state()
         user         = interaction.user
@@ -252,6 +252,8 @@ class AttendanceView(discord.ui.View):
         now_dt       = datetime.now(CAIRO_TZ)
 
         if user.mention not in state["logged_in_today"]:
+            await interaction.response.defer(ephemeral=True)
+
             state["logged_in_today"][user.mention]  = current_time
             state["login_timestamps"][user.mention] = now_dt.isoformat()
             save_state(state)
@@ -261,7 +263,7 @@ class AttendanceView(discord.ui.View):
             await add_leaderboard_point(user.id)
 
             await interaction.message.edit(embed=create_attendance_embed(state["logged_in_today"]))
-            await interaction.response.send_message(f"✅ Logged in at {current_time} 🚀", ephemeral=True)
+            await interaction.followup.send(f"✅ Logged in at {current_time} 🚀", ephemeral=True)
 
             log_channel = bot.get_channel(LOG_CHANNEL_ID)
             if log_channel:
