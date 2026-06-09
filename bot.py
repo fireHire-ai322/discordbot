@@ -80,9 +80,9 @@ async def gas_request(action, params={}):
         all_params = {"action": action, **params}
         async with aiohttp.ClientSession() as session:
             async with session.get(GAS_URL, params=all_params, timeout=aiohttp.ClientTimeout(total=15), allow_redirects=True) as resp:
-    text = await resp.text()
-    log.info(f"GAS raw response: {text[:200]}")
-    result = json.loads(text)
+                text = await resp.text()
+                log.info(f"GAS raw response: {text[:200]}")
+                result = json.loads(text)
                 log.info(f"GAS [{action}] → {result}")
                 return result
     except Exception as e:
@@ -112,7 +112,6 @@ async def add_leaderboard_point(user_id):
 
 async def reset_leaderboard():
     await gas_request("resetLeaderboard")
-
 # ============================================================
 # Local State — بس للحاجات اللي محتاجها في نفس الـ run
 # (logged_in_today, login_timestamps, daily_reports_sent, tasks_done)
