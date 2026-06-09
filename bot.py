@@ -79,8 +79,10 @@ async def gas_request(action, params={}):
     try:
         all_params = {"action": action, **params}
         async with aiohttp.ClientSession() as session:
-            async with session.get(GAS_URL, params=all_params, timeout=aiohttp.ClientTimeout(total=15)) as resp:
-                result = await resp.json(content_type=None)
+            async with session.get(GAS_URL, params=all_params, timeout=aiohttp.ClientTimeout(total=15), allow_redirects=True) as resp:
+    text = await resp.text()
+    log.info(f"GAS raw response: {text[:200]}")
+    result = json.loads(text)
                 log.info(f"GAS [{action}] → {result}")
                 return result
     except Exception as e:
