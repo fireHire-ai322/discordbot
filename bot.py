@@ -1,6 +1,7 @@
 """
 FireHire RS — Discord Attendance Bot
-- بيحفظ الـ state في Google Sheets عن طريق GAS
+- بيحفظ كل الـ state (logged_in_today, login_timestamps, daily_reports_sent,
+  tasks_done, weekly attendance, leaderboard) في Google Sheets عن طريق GAS
 - بيشتغل 5.5 ساعة وبيوقف نفسه
 - GitHub Actions بيشغله كل 6 ساعات
 """
@@ -62,19 +63,24 @@ TASKS = [
 # ============================================================
 # GAS API
 # ============================================================
-async def gas_request(action, params={}):
+async def gas_request(action, params=None, method="GET"):
     if not GAS_URL:
         log.warning("GAS_URL not set!")
         return None
+    if params is None:
+        params = {}
     try:
         all_params = {"action": action, **params}
         async with aiohttp.ClientSession() as session:
-            async with session.get(GAS_URL, params=all_params, timeout=aiohttp.ClientTimeout(total=15), allow_redirects=True) as resp:
-                text = await resp.text()
-                log.info(f"GAS raw response: {text[:200]}")
-                result = json.loads(text)
-                log.info(f"GAS [{action}] → {result}")
-                return result
+            if method == "GET":
+                async with session.get(GAS_URL, params=all_params, timeout=aiohttp.ClientTimeout(total=15), allow_redirects=True) as resp:
+                    text = await resp.text()
+            else:
+                async with session.post(GAS_URL, data=all_params, timeout=aiohttp.ClientTimeout(total=15), allow_redirects=True) as resp:
+                    text = await resp.text()
+            log.info(f"GAS raw response [{action}]: {text[:200]}")
+            result = json.loads(text)
+            return result
     except Exception as e:
         log.error(f"GAS error [{action}]: {e}")
         return None
@@ -104,24 +110,33 @@ async def reset_leaderboard():
     await gas_request("resetLeaderboard")
 
 # ============================================================
-# Local State
+# Bot State (Google Sheets via GAS)
 # ============================================================
-STATE_FILE = "last_state.json"
+DEFAULT_STATE = {
+    "logged_in_today":    {},
+    "login_timestamps":   {},
+    "daily_reports_sent": [],
+    "tasks_done":         []
+}
 
-def load_state():
-    if os.path.exists(STATE_FILE):
-        with open(STATE_FILE, "r", encoding="utf-8") as f:
-            return json.load(f)
-    return {
-        "logged_in_today":    {},
-        "login_timestamps":   {},
-        "daily_reports_sent": [],
-        "tasks_done":         []
-    }
+async def load_state():
+    result = await gas_request("getState")
+    if result and "state" in result and result["state"]:
+        s = result["state"]
+        return {
+            "logged_in_today":    s.get("logged_in_today", {}),
+            "login_timestamps":   s.get("login_timestamps", {}),
+            "daily_reports_sent": s.get("daily_reports_sent", []),
+            "tasks_done":         s.get("tasks_done", [])
+        }
+    log.warning("Could not load state from GAS, using default empty state")
+    return {k: (v.copy() if isinstance(v, (dict, list)) else v) for k, v in DEFAULT_STATE.items()}
 
-def save_state(state):
-    with open(STATE_FILE, "w", encoding="utf-8") as f:
-        json.dump(state, f, ensure_ascii=False, indent=2)
+async def save_state(state):
+    # POST عشان الـ state ممكن يكبر ويتعدى حدود GET URL length
+    result = await gas_request("saveState", {"state": json.dumps(state, ensure_ascii=False)}, method="POST")
+    if not result or not result.get("success"):
+        log.error(f"Failed to save state: {result}")
 
 def is_task_done(state, task_key, date_str):
     return f"{task_key}_{date_str}" in state.get("tasks_done", [])
@@ -186,7 +201,7 @@ class RecruiterReportModal(discord.ui.Modal, title="📋 Daily Report"):
 
     async def on_submit(self, interaction: discord.Interaction):
         await interaction.response.defer(ephemeral=True)
-        state = load_state()
+        state = await load_state()
         main_channel = bot.get_channel(CHANNEL_ID)
         if not main_channel:
             await interaction.followup.send("❌ Error: Can't find the server.", ephemeral=True)
@@ -201,7 +216,7 @@ class RecruiterReportModal(discord.ui.Modal, title="📋 Daily Report"):
         uid = str(interaction.user.id)
         if uid not in state["daily_reports_sent"]:
             state["daily_reports_sent"].append(uid)
-            save_state(state)
+            await save_state(state)
         if tl:
             now_str = datetime.now(CAIRO_TZ).strftime("%I:%M %p")
             report_embed = discord.Embed(title="📊 Recruiter Daily Report", color=discord.Color.green())
@@ -231,7 +246,7 @@ class AttendanceView(discord.ui.View):
 
     @discord.ui.button(label="Log In 🟢", style=discord.ButtonStyle.green, custom_id="login_button")
     async def login_button(self, interaction: discord.Interaction, button: discord.ui.Button):
-        state        = load_state()
+        state        = await load_state()
         user         = interaction.user
         current_time = datetime.now(CAIRO_TZ).strftime("%I:%M %p")
         now_dt       = datetime.now(CAIRO_TZ)
@@ -240,7 +255,7 @@ class AttendanceView(discord.ui.View):
             await interaction.response.defer(ephemeral=True)
             state["logged_in_today"][user.mention]  = current_time
             state["login_timestamps"][user.mention] = now_dt.isoformat()
-            save_state(state)
+            await save_state(state)
             await save_attendance(user.id)
             await add_leaderboard_point(user.id)
             await interaction.message.edit(embed=create_attendance_embed(state["logged_in_today"]))
@@ -259,7 +274,7 @@ class AttendanceView(discord.ui.View):
 
     @discord.ui.button(label="Log Out 🔴", style=discord.ButtonStyle.red, custom_id="logout_button")
     async def logout_button(self, interaction: discord.Interaction, button: discord.ui.Button):
-        state        = load_state()
+        state        = await load_state()
         user         = interaction.user
         current_time = datetime.now(CAIRO_TZ).strftime("%I:%M %p")
         now_dt       = datetime.now(CAIRO_TZ)
@@ -276,7 +291,7 @@ class AttendanceView(discord.ui.View):
                 duration_str = f"{h}h {m}m"
             del state["logged_in_today"][user.mention]
             state["login_timestamps"].pop(user.mention, None)
-            save_state(state)
+            await save_state(state)
             await interaction.message.edit(embed=create_attendance_embed(state["logged_in_today"]))
             await interaction.followup.send(
                 f"🛑 Logged out at {current_time}\n⏱️ Total shift: **{duration_str}**", ephemeral=True
@@ -300,7 +315,7 @@ class ReportView(discord.ui.View):
 
     @discord.ui.button(label="📋 Submit Daily Report", style=discord.ButtonStyle.green, custom_id="submit_report_button")
     async def submit_report(self, interaction: discord.Interaction, button: discord.ui.Button):
-        state = load_state()
+        state = await load_state()
         if str(interaction.user.id) in state["daily_reports_sent"]:
             await interaction.response.send_message("✅ Already submitted today!", ephemeral=True)
             return
@@ -320,10 +335,10 @@ async def on_ready():
 @commands.has_permissions(administrator=True)
 async def setup_attendance(ctx):
     await ctx.message.delete()
-    state = load_state()
+    state = await load_state()
     state["logged_in_today"]  = {}
     state["login_timestamps"] = {}
-    save_state(state)
+    await save_state(state)
     await ctx.send(embed=create_attendance_embed({}), view=AttendanceView())
 
 # ============================================================
@@ -341,7 +356,7 @@ async def scheduler_loop():
         now     = datetime.now(CAIRO_TZ)
         today   = now.strftime("%Y-%m-%d")
         weekday = now.weekday()
-        state   = load_state()
+        state   = await load_state()
         for task_h, task_m, task_key, weekdays in TASKS:
             if weekdays is not None and weekday not in weekdays:
                 continue
@@ -355,7 +370,7 @@ async def scheduler_loop():
             try:
                 await run_task(task_key, state, now, weekday, today)
                 mark_task_done(state, task_key, today)
-                save_state(state)
+                await save_state(state)
                 log.info(f"✅ Done: {task_key}")
             except Exception as e:
                 log.error(f"❌ {task_key} failed: {e}", exc_info=True)
@@ -390,7 +405,7 @@ async def run_task(task_key, state, now, weekday, today):
             state["logged_in_today"]    = {}
             state["login_timestamps"]   = {}
             state["daily_reports_sent"] = []
-            save_state(state)
+            await save_state(state)
             await channel.purge(limit=5, check=lambda msg: msg.author == bot.user)
             await channel.send(embed=create_attendance_embed({}), view=AttendanceView())
 
@@ -623,7 +638,7 @@ async def run_task(task_key, state, now, weekday, today):
                 state["daily_reports_sent"] = []
                 log.info("✅ Weekly data reset (Friday)")
 
-            save_state(state)
+            await save_state(state)
             await log_channel.send("🌙 Shift ended. Goodnight!")
 
 # ============================================================
