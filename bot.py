@@ -91,8 +91,8 @@ async def get_weekly_ids():
         return set(str(i) for i in result["ids"])
     return set()
 
-async def save_attendance(user_id):
-    await gas_request("saveAttendance", {"userId": str(user_id)})
+async def save_attendance(user_id, display_name=""):
+    await gas_request("saveAttendance", {"userId": str(user_id), "displayName": display_name})
 
 async def clear_weekly():
     await gas_request("clearWeeklyAttendance")
@@ -103,8 +103,8 @@ async def get_leaderboard():
         return result["data"]
     return {}
 
-async def add_leaderboard_point(user_id):
-    await gas_request("addLeaderboardPoint", {"userId": str(user_id)})
+async def add_leaderboard_point(user_id, display_name=""):
+    await gas_request("addLeaderboardPoint", {"userId": str(user_id), "displayName": display_name})
 
 async def reset_leaderboard():
     await gas_request("resetLeaderboard")
@@ -256,8 +256,8 @@ class AttendanceView(discord.ui.View):
             state["logged_in_today"][user.mention]  = current_time
             state["login_timestamps"][user.mention] = now_dt.isoformat()
             await save_state(state)
-            await save_attendance(user.id)
-            await add_leaderboard_point(user.id)
+            await save_attendance(user.id, user.display_name)
+            await add_leaderboard_point(user.id, user.display_name)
             await interaction.message.edit(embed=create_attendance_embed(state["logged_in_today"]))
             await interaction.followup.send(f"✅ Logged in at {current_time} 🚀", ephemeral=True)
             log_channel = bot.get_channel(LOG_CHANNEL_ID)
@@ -618,12 +618,13 @@ async def run_task(task_key, state, now, weekday, today):
                 lb      = await get_leaderboard()
                 channel = bot.get_channel(CHANNEL_ID)
                 if lb and channel:
-                    sorted_lb = sorted(lb.items(), key=lambda x: int(x[1]), reverse=True)
+                    sorted_lb = sorted(lb.items(), key=lambda x: int(x[1]["points"]), reverse=True)
                     medals    = ["🥇", "🥈", "🥉"]
                     lines     = []
-                    for i, (uid, points) in enumerate(sorted_lb):
+                    for i, (uid, info) in enumerate(sorted_lb):
                         member = guild.get_member(int(uid))
-                        name   = member.display_name if member else f"User {uid}"
+                        name   = member.display_name if member else (info.get("name") or f"User {uid}")
+                        points = info.get("points", 0)
                         medal  = medals[i] if i < 3 else f"#{i+1}"
                         lines.append(f"{medal} **{name}** — {points} day(s)")
                     lb_embed = discord.Embed(
