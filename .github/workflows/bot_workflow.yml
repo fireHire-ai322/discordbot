@@ -14,26 +14,15 @@ jobs:
   run-bot:
     runs-on: ubuntu-latest
     timeout-minutes: 360   # 6 ساعات كاملة
-    permissions:
-      contents: write
 
     steps:
       - name: Checkout code
         uses: actions/checkout@v4.2.2
-        with:
-          fetch-depth: 0
 
       - name: Setup Python
         uses: actions/setup-python@v5.6.0
         with:
           python-version: '3.11'
-
-      - name: Restore state cache
-        uses: actions/cache@v4
-        with:
-          path: last_state.json
-          key: attendance-state-v1
-          restore-keys: attendance-state-v1
 
       - name: Install dependencies
         run: pip install discord.py pytz aiohttp
@@ -45,10 +34,3 @@ jobs:
           # البوت هيشتغل 5.5 ساعة وبعدين يوقف نفسه قبل ما الـ job تنتهي
           BOT_MAX_RUNTIME_MINUTES: '330'
         run: python bot.py
-
-      - name: Save state cache
-        uses: actions/cache/save@v4
-        if: always()
-        with:
-          path: last_state.json
-          key: attendance-state-v1
