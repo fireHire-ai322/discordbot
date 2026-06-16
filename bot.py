@@ -1,9 +1,9 @@
 """
 FireHire RS — Discord Attendance Bot
-- بيحفظ كل الـ state (logged_in_today, login_timestamps, daily_reports_sent,
-  tasks_done, weekly attendance, leaderboard) في Google Sheets عن طريق GAS
+- بيحفظ الـ state في Google Sheets عن طريق GAS
 - بيشتغل 5.5 ساعة وبيوقف نفسه
 - GitHub Actions بيشغله كل 6 ساعات
+- Invite Tracking: بيدي الـ roles للـ members الجدد بناءً على مين عمل الـ invite
 """
 
 import discord
@@ -24,19 +24,23 @@ logging.basicConfig(
 )
 log = logging.getLogger("FireHireBot")
 
-DISCORD_TOKEN  = os.environ["DISCORD_TOKEN"]
-CHANNEL_ID     = 1461466432679182684
-STAFF_ROLE_ID  = 1461551955909410972
-LOG_CHANNEL_ID = 1511158605875904622
-GAS_URL        = os.environ.get("GAS_URL", "")
+DISCORD_TOKEN       = os.environ["DISCORD_TOKEN"]
+CHANNEL_ID          = 1461466432679182684
+STAFF_ROLE_ID       = 1461551955909410972
+LOG_CHANNEL_ID      = 1511158605875904622
+GAS_URL             = os.environ.get("GAS_URL", "")
 CAIRO_TZ            = pytz.timezone("Africa/Cairo")
 MAX_RUNTIME_MINUTES = int(os.environ.get("BOT_MAX_RUNTIME_MINUTES", "330"))
 
 intents = discord.Intents.default()
 intents.message_content = True
-intents.members = True
+intents.members         = True
+intents.invites         = True          # ← مهم للـ invite tracking
 bot = commands.Bot(command_prefix="!", intents=intents)
 
+# ============================================================
+# Team Map
+# ============================================================
 TEAM_MAP = {
     "A": {"tl_role": "TL-A", "rec_role": "Rec-A", "channel": "hussein-team-a"},
     "B": {"tl_role": "TL-B", "rec_role": "Rec-B", "channel": "amir-team-b"},
@@ -47,40 +51,170 @@ TEAM_MAP = {
     "N": {"tl_role": "TL-N", "rec_role": "Rec-N", "channel": "aya-team-n"},
     "E": {"tl_role": "TL-E", "rec_role": "Rec-E", "channel": "merna-team-e"},
     "G": {"tl_role": "TL-G", "rec_role": "Rec-G", "channel": "dalia-team-g"},
+    "F": {"tl_role": "TL-F", "rec_role": "Rec-F", "channel": "eman-team-f"},   # ← تيم جديد
 }
 
-TASKS = [
-    (15, 30, "pre_attendance_msg", {0,1,2,3,4}),
-    (16,  0, "attendance_open",    {0,1,2,3,4}),
-    (16, 30, "reminder_430",       {0,1,2,3,4}),
-    (16, 40, "daily_target",       {0,1,2,3,4}),
-    (19,  0, "crm_reminder",       {0,1,2,3,4}),
-    (20,  0, "thursday_warning",   {3}),
-    (20, 30, "eod_report",         {0,1,2,3,4}),
-    (21, 30, "auto_logout",        {0,1,2,3,4}),
-]
+# Discord User ID بتاع كل TL → حرف التيم
+TL_INVITE_MAP = {
+    1315675513833914412: "A",   # حسين
+    821847366872989696:  "B",   # أمير
+    797559402630479882:  "C",   # رحمة
+    # نهال (Team D) → هتضيف الـ ID بعدين عن طريق !add_tl
+    1462076718788644961: "I",   # مريم
+    1395389201075142820: "J",   # سيد
+    1495536407849205883: "N",   # آية
+    1512509637486706873: "E",   # مرنا
+    1512566187232460966: "G",   # داليا
+    1514145628593193042: "F",   # إيمان
+}
+
+# الـ Role الأساسي اللي كل جويناً ياخده
+GENERAL_REC_ROLE = "Rec-General"
+
+# ============================================================
+# Invite Cache — بنحفظ الـ invites قبل ما حد يجوين عشان نقدر نقارن
+# ============================================================
+invite_cache: dict[str, int] = {}   # code → uses
+
+async def build_invite_cache(guild: discord.Guild):
+    """بنبني cache بكل الـ invites الموجودة وعدد استخداماتها"""
+    global invite_cache
+    try:
+        invites = await guild.fetch_invites()
+        invite_cache = {inv.code: inv.uses for inv in invites}
+        log.info(f"📋 Invite cache built: {len(invite_cache)} invites")
+    except Exception as e:
+        log.error(f"Failed to build invite cache: {e}")
+
+async def find_used_invite(guild: discord.Guild) -> discord.Invite | None:
+    """
+    بنقارن الـ invites الحالية بالـ cache عشان نلاقي الـ invite اللي اتستخدم
+    """
+    try:
+        current_invites = await guild.fetch_invites()
+        for inv in current_invites:
+            cached_uses = invite_cache.get(inv.code, 0)
+            if inv.uses > cached_uses:
+                # الـ invite ده اتستخدم دلوقتي
+                invite_cache[inv.code] = inv.uses
+                return inv
+        # ممكن يكون one-time invite اتمسح بعد الاستخدام
+        return None
+    except Exception as e:
+        log.error(f"Error finding used invite: {e}")
+        return None
+
+# ============================================================
+# Role Assignment
+# ============================================================
+async def assign_roles_to_member(member: discord.Member, team_letter: str | None, inviter_name: str = "Unknown"):
+    """بنضيف الـ roles للـ member الجديد"""
+    guild       = member.guild
+    log_channel = bot.get_channel(LOG_CHANNEL_ID)
+    roles_added = []
+
+    # 1) Rec-General دايماً
+    general_role = discord.utils.get(guild.roles, name=GENERAL_REC_ROLE)
+    if general_role and general_role not in member.roles:
+        await member.add_roles(general_role)
+        roles_added.append(general_role.name)
+
+    # 2) لو عرفنا التيم، نضيف الـ Rec-X role
+    team_role_name = None
+    if team_letter and team_letter in TEAM_MAP:
+        team_role_name = TEAM_MAP[team_letter]["rec_role"]
+        team_role      = discord.utils.get(guild.roles, name=team_role_name)
+        if team_role and team_role not in member.roles:
+            await member.add_roles(team_role)
+            roles_added.append(team_role.name)
+
+    # 3) بعت log
+    if log_channel:
+        if roles_added:
+            embed = discord.Embed(
+                title="✅ New Member — Roles Assigned",
+                color=discord.Color.green()
+            )
+            embed.add_field(name="👤 Member",   value=member.mention, inline=True)
+            embed.add_field(name="📨 Invited By", value=inviter_name,  inline=True)
+            embed.add_field(name="🏷️ Team",     value=f"Team {team_letter}" if team_letter else "❓ Unknown", inline=True)
+            embed.add_field(name="✅ Roles Given", value=", ".join(roles_added) if roles_added else "None", inline=False)
+            embed.set_thumbnail(url=member.display_avatar.url)
+            embed.timestamp = datetime.now(CAIRO_TZ)
+            await log_channel.send(embed=embed)
+        else:
+            # مش قدرنا نحدد التيم — بعت تنبيه للأدمن
+            embed = discord.Embed(
+                title="⚠️ New Member — Team Unknown!",
+                description=(
+                    f"{member.mention} joined but we **couldn't detect** which team invite they used.\n\n"
+                    f"Please assign roles manually.\n"
+                    f"Invited by: **{inviter_name}**"
+                ),
+                color=discord.Color.red()
+            )
+            embed.set_thumbnail(url=member.display_avatar.url)
+            embed.timestamp = datetime.now(CAIRO_TZ)
+            await log_channel.send(embed=embed)
+
+    log.info(f"Roles assigned to {member}: {roles_added}")
+
+# ============================================================
+# Startup Check — للـ members اللي جوا وانت offline
+# ============================================================
+async def check_unassigned_members(guild: discord.Guild):
+    """
+    لما البوت يشتغل بيشوف الـ members اللي معندهمش أي rec role
+    ويبعت تنبيه للـ log channel عشان الأدمن يتعامل معاهم
+    """
+    log_channel = bot.get_channel(LOG_CHANNEL_ID)
+    if not log_channel:
+        return
+
+    unassigned = []
+    rec_roles   = {info["rec_role"] for info in TEAM_MAP.values()} | {GENERAL_REC_ROLE}
+
+    for member in guild.members:
+        if member.bot:
+            continue
+        member_role_names = {r.name for r in member.roles}
+        # لو معندوش أي rec role خالص
+        if not member_role_names.intersection(rec_roles):
+            unassigned.append(member)
+
+    if unassigned:
+        mentions = "\n".join([f"• {m.mention} (joined: {m.joined_at.strftime('%Y-%m-%d %H:%M') if m.joined_at else 'unknown'})" for m in unassigned])
+        embed = discord.Embed(
+            title="⚠️ Unassigned Members Detected",
+            description=(
+                f"Found **{len(unassigned)}** member(s) with no Rec roles.\n"
+                f"They may have joined while the bot was offline:\n\n"
+                f"{mentions}"
+            ),
+            color=discord.Color.orange()
+        )
+        embed.set_footer(text="Please assign their roles manually or re-invite them.")
+        await log_channel.send(embed=embed)
+        log.warning(f"Found {len(unassigned)} unassigned members")
+    else:
+        log.info("✅ All members have roles — no action needed")
 
 # ============================================================
 # GAS API
 # ============================================================
-async def gas_request(action, params=None, method="GET"):
+async def gas_request(action, params={}):
     if not GAS_URL:
         log.warning("GAS_URL not set!")
         return None
-    if params is None:
-        params = {}
     try:
         all_params = {"action": action, **params}
         async with aiohttp.ClientSession() as session:
-            if method == "GET":
-                async with session.get(GAS_URL, params=all_params, timeout=aiohttp.ClientTimeout(total=15), allow_redirects=True) as resp:
-                    text = await resp.text()
-            else:
-                async with session.post(GAS_URL, data=all_params, timeout=aiohttp.ClientTimeout(total=15), allow_redirects=True) as resp:
-                    text = await resp.text()
-            log.info(f"GAS raw response [{action}]: {text[:200]}")
-            result = json.loads(text)
-            return result
+            async with session.get(GAS_URL, params=all_params, timeout=aiohttp.ClientTimeout(total=15), allow_redirects=True) as resp:
+                text = await resp.text()
+                log.info(f"GAS raw response: {text[:200]}")
+                result = json.loads(text)
+                log.info(f"GAS [{action}] → {result}")
+                return result
     except Exception as e:
         log.error(f"GAS error [{action}]: {e}")
         return None
@@ -91,8 +225,8 @@ async def get_weekly_ids():
         return set(str(i) for i in result["ids"])
     return set()
 
-async def save_attendance(user_id, display_name=""):
-    await gas_request("saveAttendance", {"userId": str(user_id), "displayName": display_name})
+async def save_attendance(user_id):
+    await gas_request("saveAttendance", {"userId": str(user_id)})
 
 async def clear_weekly():
     await gas_request("clearWeeklyAttendance")
@@ -103,40 +237,31 @@ async def get_leaderboard():
         return result["data"]
     return {}
 
-async def add_leaderboard_point(user_id, display_name=""):
-    await gas_request("addLeaderboardPoint", {"userId": str(user_id), "displayName": display_name})
+async def add_leaderboard_point(user_id):
+    await gas_request("addLeaderboardPoint", {"userId": str(user_id)})
 
 async def reset_leaderboard():
     await gas_request("resetLeaderboard")
 
 # ============================================================
-# Bot State (Google Sheets via GAS)
+# Local State
 # ============================================================
-DEFAULT_STATE = {
-    "logged_in_today":    {},
-    "login_timestamps":   {},
-    "daily_reports_sent": [],
-    "tasks_done":         []
-}
+STATE_FILE = "last_state.json"
 
-async def load_state():
-    result = await gas_request("getState")
-    if result and "state" in result and result["state"]:
-        s = result["state"]
-        return {
-            "logged_in_today":    s.get("logged_in_today", {}),
-            "login_timestamps":   s.get("login_timestamps", {}),
-            "daily_reports_sent": s.get("daily_reports_sent", []),
-            "tasks_done":         s.get("tasks_done", [])
-        }
-    log.warning("Could not load state from GAS, using default empty state")
-    return {k: (v.copy() if isinstance(v, (dict, list)) else v) for k, v in DEFAULT_STATE.items()}
+def load_state():
+    if os.path.exists(STATE_FILE):
+        with open(STATE_FILE, "r", encoding="utf-8") as f:
+            return json.load(f)
+    return {
+        "logged_in_today":    {},
+        "login_timestamps":   {},
+        "daily_reports_sent": [],
+        "tasks_done":         []
+    }
 
-async def save_state(state):
-    # POST عشان الـ state ممكن يكبر ويتعدى حدود GET URL length
-    result = await gas_request("saveState", {"state": json.dumps(state, ensure_ascii=False)}, method="POST")
-    if not result or not result.get("success"):
-        log.error(f"Failed to save state: {result}")
+def save_state(state):
+    with open(STATE_FILE, "w", encoding="utf-8") as f:
+        json.dump(state, f, ensure_ascii=False, indent=2)
 
 def is_task_done(state, task_key, date_str):
     return f"{task_key}_{date_str}" in state.get("tasks_done", [])
@@ -201,7 +326,7 @@ class RecruiterReportModal(discord.ui.Modal, title="📋 Daily Report"):
 
     async def on_submit(self, interaction: discord.Interaction):
         await interaction.response.defer(ephemeral=True)
-        state = await load_state()
+        state = load_state()
         main_channel = bot.get_channel(CHANNEL_ID)
         if not main_channel:
             await interaction.followup.send("❌ Error: Can't find the server.", ephemeral=True)
@@ -216,7 +341,7 @@ class RecruiterReportModal(discord.ui.Modal, title="📋 Daily Report"):
         uid = str(interaction.user.id)
         if uid not in state["daily_reports_sent"]:
             state["daily_reports_sent"].append(uid)
-            await save_state(state)
+            save_state(state)
         if tl:
             now_str = datetime.now(CAIRO_TZ).strftime("%I:%M %p")
             report_embed = discord.Embed(title="📊 Recruiter Daily Report", color=discord.Color.green())
@@ -246,7 +371,7 @@ class AttendanceView(discord.ui.View):
 
     @discord.ui.button(label="Log In 🟢", style=discord.ButtonStyle.green, custom_id="login_button")
     async def login_button(self, interaction: discord.Interaction, button: discord.ui.Button):
-        state        = await load_state()
+        state        = load_state()
         user         = interaction.user
         current_time = datetime.now(CAIRO_TZ).strftime("%I:%M %p")
         now_dt       = datetime.now(CAIRO_TZ)
@@ -255,9 +380,9 @@ class AttendanceView(discord.ui.View):
             await interaction.response.defer(ephemeral=True)
             state["logged_in_today"][user.mention]  = current_time
             state["login_timestamps"][user.mention] = now_dt.isoformat()
-            await save_state(state)
-            await save_attendance(user.id, user.display_name)
-            await add_leaderboard_point(user.id, user.display_name)
+            save_state(state)
+            await save_attendance(user.id)
+            await add_leaderboard_point(user.id)
             await interaction.message.edit(embed=create_attendance_embed(state["logged_in_today"]))
             await interaction.followup.send(f"✅ Logged in at {current_time} 🚀", ephemeral=True)
             log_channel = bot.get_channel(LOG_CHANNEL_ID)
@@ -274,7 +399,7 @@ class AttendanceView(discord.ui.View):
 
     @discord.ui.button(label="Log Out 🔴", style=discord.ButtonStyle.red, custom_id="logout_button")
     async def logout_button(self, interaction: discord.Interaction, button: discord.ui.Button):
-        state        = await load_state()
+        state        = load_state()
         user         = interaction.user
         current_time = datetime.now(CAIRO_TZ).strftime("%I:%M %p")
         now_dt       = datetime.now(CAIRO_TZ)
@@ -291,7 +416,7 @@ class AttendanceView(discord.ui.View):
                 duration_str = f"{h}h {m}m"
             del state["logged_in_today"][user.mention]
             state["login_timestamps"].pop(user.mention, None)
-            await save_state(state)
+            save_state(state)
             await interaction.message.edit(embed=create_attendance_embed(state["logged_in_today"]))
             await interaction.followup.send(
                 f"🛑 Logged out at {current_time}\n⏱️ Total shift: **{duration_str}**", ephemeral=True
@@ -315,7 +440,7 @@ class ReportView(discord.ui.View):
 
     @discord.ui.button(label="📋 Submit Daily Report", style=discord.ButtonStyle.green, custom_id="submit_report_button")
     async def submit_report(self, interaction: discord.Interaction, button: discord.ui.Button):
-        state = await load_state()
+        state = load_state()
         if str(interaction.user.id) in state["daily_reports_sent"]:
             await interaction.response.send_message("✅ Already submitted today!", ephemeral=True)
             return
@@ -329,17 +454,124 @@ async def on_ready():
     log.info(f"✅ Bot online: {bot.user}")
     bot.add_view(AttendanceView())
     bot.add_view(ReportView())
+
+    # بنبني الـ invite cache لكل الـ guilds
+    for guild in bot.guilds:
+        await build_invite_cache(guild)
+        await check_unassigned_members(guild)
+
     bot.loop.create_task(scheduler_loop())
 
+
+@bot.event
+async def on_invite_create(invite: discord.Invite):
+    """لما invite جديد يتعمل، نضيفه للـ cache"""
+    invite_cache[invite.code] = invite.uses or 0
+    log.info(f"New invite created: {invite.code} by {invite.inviter}")
+
+
+@bot.event
+async def on_invite_delete(invite: discord.Invite):
+    """لما invite يتمسح، نشيله من الـ cache"""
+    invite_cache.pop(invite.code, None)
+    log.info(f"Invite deleted: {invite.code}")
+
+
+@bot.event
+async def on_member_join(member: discord.Member):
+    """
+    لما حد يجوين:
+    1. نلاقي الـ invite اللي استخدمه
+    2. نحدد التيم من الـ inviter
+    3. نديه الـ roles
+    """
+    log.info(f"New member joined: {member} ({member.id})")
+    guild = member.guild
+
+    used_invite = await find_used_invite(guild)
+
+    if used_invite and used_invite.inviter:
+        inviter_id   = used_invite.inviter.id
+        inviter_name = used_invite.inviter.display_name
+        team_letter  = TL_INVITE_MAP.get(inviter_id)
+
+        log.info(f"Used invite: {used_invite.code} | Inviter: {inviter_name} ({inviter_id}) | Team: {team_letter}")
+        await assign_roles_to_member(member, team_letter, inviter_name)
+    else:
+        # مش قدرنا نحدد الـ invite (one-time invite أو مشكلة)
+        log.warning(f"Couldn't determine invite for {member}")
+        await assign_roles_to_member(member, None, "Unknown")
+
+
+# ============================================================
+# Admin Commands
+# ============================================================
 @bot.command()
 @commands.has_permissions(administrator=True)
 async def setup_attendance(ctx):
     await ctx.message.delete()
-    state = await load_state()
+    state = load_state()
     state["logged_in_today"]  = {}
     state["login_timestamps"] = {}
-    await save_state(state)
+    save_state(state)
     await ctx.send(embed=create_attendance_embed({}), view=AttendanceView())
+
+
+@bot.command()
+@commands.has_permissions(administrator=True)
+async def add_tl(ctx, user_id: int, team_letter: str):
+    """
+    يضيف TL جديد للـ invite map
+    الاستخدام: !add_tl 123456789 D
+    """
+    team_letter = team_letter.upper()
+    if team_letter not in TEAM_MAP:
+        await ctx.send(f"❌ Team `{team_letter}` غير موجود! الـ teams المتاحة: {', '.join(TEAM_MAP.keys())}")
+        return
+    TL_INVITE_MAP[user_id] = team_letter
+    await ctx.send(f"✅ تم إضافة TL بـ ID `{user_id}` للـ Team `{team_letter}`")
+    log.info(f"Added TL mapping: {user_id} → {team_letter}")
+
+
+@bot.command()
+@commands.has_permissions(administrator=True)
+async def list_tls(ctx):
+    """بيعرض كل الـ TL mappings الحالية"""
+    guild = ctx.guild
+    lines = []
+    for uid, letter in TL_INVITE_MAP.items():
+        member = guild.get_member(uid)
+        name   = member.display_name if member else f"ID: {uid}"
+        lines.append(f"• **{name}** → Team {letter} ({TEAM_MAP[letter]['rec_role']})")
+    embed = discord.Embed(
+        title="📋 TL Invite Mappings",
+        description="\n".join(lines) if lines else "No mappings found.",
+        color=discord.Color.blue()
+    )
+    await ctx.send(embed=embed)
+
+
+@bot.command()
+@commands.has_permissions(administrator=True)
+async def check_members(ctx):
+    """بيشوف الـ members اللي معندهمش roles يدوياً"""
+    await check_unassigned_members(ctx.guild)
+    await ctx.send("✅ Done! Check the log channel.", delete_after=5)
+
+
+# ============================================================
+# Tasks
+# ============================================================
+TASKS = [
+    (15, 30, "pre_attendance_msg", {0,1,2,3,4}),
+    (16,  0, "attendance_open",    {0,1,2,3,4}),
+    (16, 30, "reminder_430",       {0,1,2,3,4}),
+    (16, 40, "daily_target",       {0,1,2,3,4}),
+    (19,  0, "crm_reminder",       {0,1,2,3,4}),
+    (20,  0, "thursday_warning",   {3}),
+    (20, 30, "eod_report",         {0,1,2,3,4}),
+    (21, 30, "auto_logout",        {0,1,2,3,4}),
+]
 
 # ============================================================
 # Scheduler
@@ -356,7 +588,7 @@ async def scheduler_loop():
         now     = datetime.now(CAIRO_TZ)
         today   = now.strftime("%Y-%m-%d")
         weekday = now.weekday()
-        state   = await load_state()
+        state   = load_state()
         for task_h, task_m, task_key, weekdays in TASKS:
             if weekdays is not None and weekday not in weekdays:
                 continue
@@ -370,14 +602,14 @@ async def scheduler_loop():
             try:
                 await run_task(task_key, state, now, weekday, today)
                 mark_task_done(state, task_key, today)
-                await save_state(state)
+                save_state(state)
                 log.info(f"✅ Done: {task_key}")
             except Exception as e:
                 log.error(f"❌ {task_key} failed: {e}", exc_info=True)
         await asyncio.sleep(30)
 
 # ============================================================
-# Tasks
+# Run Tasks
 # ============================================================
 async def run_task(task_key, state, now, weekday, today):
     channel     = bot.get_channel(CHANNEL_ID)
@@ -405,7 +637,7 @@ async def run_task(task_key, state, now, weekday, today):
             state["logged_in_today"]    = {}
             state["login_timestamps"]   = {}
             state["daily_reports_sent"] = []
-            await save_state(state)
+            save_state(state)
             await channel.purge(limit=5, check=lambda msg: msg.author == bot.user)
             await channel.send(embed=create_attendance_embed({}), view=AttendanceView())
 
@@ -576,7 +808,6 @@ async def run_task(task_key, state, now, weekday, today):
     elif task_key == "auto_logout":
         if log_channel:
             guild    = log_channel.guild
-            week_str = now.strftime("%Y-W%W")
             auto_logouted = []
             for mention in list(state["logged_in_today"].keys()):
                 login_iso    = state["login_timestamps"].get(mention)
@@ -618,13 +849,12 @@ async def run_task(task_key, state, now, weekday, today):
                 lb      = await get_leaderboard()
                 channel = bot.get_channel(CHANNEL_ID)
                 if lb and channel:
-                    sorted_lb = sorted(lb.items(), key=lambda x: int(x[1]["points"]), reverse=True)
+                    sorted_lb = sorted(lb.items(), key=lambda x: int(x[1]), reverse=True)
                     medals    = ["🥇", "🥈", "🥉"]
                     lines     = []
-                    for i, (uid, info) in enumerate(sorted_lb):
+                    for i, (uid, points) in enumerate(sorted_lb):
                         member = guild.get_member(int(uid))
-                        name   = member.display_name if member else (info.get("name") or f"User {uid}")
-                        points = info.get("points", 0)
+                        name   = member.display_name if member else f"User {uid}"
                         medal  = medals[i] if i < 3 else f"#{i+1}"
                         lines.append(f"{medal} **{name}** — {points} day(s)")
                     lb_embed = discord.Embed(
@@ -639,7 +869,7 @@ async def run_task(task_key, state, now, weekday, today):
                 state["daily_reports_sent"] = []
                 log.info("✅ Weekly data reset (Friday)")
 
-            await save_state(state)
+            save_state(state)
             await log_channel.send("🌙 Shift ended. Goodnight!")
 
 # ============================================================
