@@ -80,7 +80,7 @@ async def build_invite_cache(guild: discord.Guild):
     """بنبني cache بكل الـ invites الموجودة وعدد استخداماتها"""
     global invite_cache
     try:
-        invites = await guild.fetch_invites()
+        invites = await guild.invites()
         invite_cache = {inv.code: inv.uses for inv in invites}
         log.info(f"📋 Invite cache built: {len(invite_cache)} invites")
     except Exception as e:
@@ -91,7 +91,7 @@ async def find_used_invite(guild: discord.Guild) -> discord.Invite | None:
     بنقارن الـ invites الحالية بالـ cache عشان نلاقي الـ invite اللي اتستخدم
     """
     try:
-        current_invites = await guild.fetch_invites()
+        current_invites = await guild.invites()
         for inv in current_invites:
             cached_uses = invite_cache.get(inv.code, 0)
             if inv.uses > cached_uses:
@@ -172,11 +172,11 @@ async def check_unassigned_members(guild: discord.Guild):
         return
 
     unassigned = []
-    # الـ roles المقبولة: Rec roles + TL roles + Rec-General
+    # الـ roles المقبولة: Rec roles + TL roles + Rec-General + Admin
     known_roles = (
         {info["rec_role"] for info in TEAM_MAP.values()} |
         {info["tl_role"]  for info in TEAM_MAP.values()} |
-        {GENERAL_REC_ROLE}
+        {GENERAL_REC_ROLE, "Admin"}
     )
 
     for member in guild.members:
