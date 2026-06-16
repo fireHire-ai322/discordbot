@@ -172,14 +172,19 @@ async def check_unassigned_members(guild: discord.Guild):
         return
 
     unassigned = []
-    rec_roles   = {info["rec_role"] for info in TEAM_MAP.values()} | {GENERAL_REC_ROLE}
+    # الـ roles المقبولة: Rec roles + TL roles + Rec-General
+    known_roles = (
+        {info["rec_role"] for info in TEAM_MAP.values()} |
+        {info["tl_role"]  for info in TEAM_MAP.values()} |
+        {GENERAL_REC_ROLE}
+    )
 
     for member in guild.members:
         if member.bot:
             continue
         member_role_names = {r.name for r in member.roles}
-        # لو معندوش أي rec role خالص
-        if not member_role_names.intersection(rec_roles):
+        # لو معندوش أي role معروف خالص
+        if not member_role_names.intersection(known_roles):
             unassigned.append(member)
 
     if unassigned:
