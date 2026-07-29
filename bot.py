@@ -44,8 +44,8 @@ bot = commands.Bot(command_prefix="!", intents=intents)
 TEAM_MAP = {
     "A": {"tl_role": "TL-A", "rec_role": "Rec-A", "channel": "hussein-team-a"},
     "B": {"tl_role": "TL-B", "rec_role": "Rec-B", "channel": "amir-team-b"},
-    "C": {"tl_role": "TL-C", "rec_role": "Rec-C", "channel": "rahma-team-c"},
-    "D": {"tl_role": "TL-D", "rec_role": "Rec-D", "channel": "nehal-team-d"},
+    "C": {"tl_role": "TL-C", "rec_role": "Rec-C", "channel": "abdulaziz-team-c"},
+    "D": {"tl_role": "TL-D", "rec_role": "Rec-D", "channel": "sara-team-d"},
     "I": {"tl_role": "TL-I", "rec_role": "Rec-I", "channel": "mariamh-team-i"},
     "J": {"tl_role": "TL-J", "rec_role": "Rec-J", "channel": "sayed-team-j"},
     "N": {"tl_role": "TL-N", "rec_role": "Rec-N", "channel": "aya-team-n"},
